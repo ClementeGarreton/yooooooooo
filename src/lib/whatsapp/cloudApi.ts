@@ -25,10 +25,19 @@ async function graphFetch(path: string, init: RequestInit) {
       Authorization: `Bearer ${accessToken}`,
       ...(init.headers || {}),
     },
+    signal: AbortSignal.timeout(25_000),
   })
   const payload = await response.json().catch(() => null)
   if (!response.ok) {
-    throw new Error(payload?.error?.message || `Meta Graph API respondió ${response.status}`)
+    const graphError = payload?.error
+    // No mostrar URL completa, token, contenido del mensaje ni teléfono del cliente.
+    const detail = [
+      `HTTP ${response.status}`,
+      graphError?.code != null ? `code=${graphError.code}` : null,
+      graphError?.error_subcode != null ? `subcode=${graphError.error_subcode}` : null,
+      graphError?.message || 'Error no especificado',
+    ].filter(Boolean).join(' | ')
+    throw new Error(`WhatsApp Graph API: ${detail}`)
   }
   return payload
 }

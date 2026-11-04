@@ -125,7 +125,7 @@ export async function moveIncomingToConversation(messageId: string, conversation
 
 /** Reclama la bienvenida de forma atómica, tanto para nuevos contactos como
  * para una interacción inactiva. Actualiza el reloj para evitar repetirla. */
-export async function claimFirstWelcome(phone: string): Promise<string | null> {
+export async function claimFirstWelcome(phone: string, explicitGreeting = false): Promise<string | null> {
   const router = await ensureRouter(phone)
   const now = new Date().toISOString()
   const query = supabaseAdmin.from('ai_conversations')
@@ -135,8 +135,17 @@ export async function claimFirstWelcome(phone: string): Promise<string | null> {
   if (router.model === ROUTER_PENDING) {
     result = await query.eq('model', ROUTER_PENDING).select('id')
   } else if (router.model === ROUTER_READY && router.status === 'closed'
-    && Date.now() - Date.parse(router.last_message_at) >= MENU_IDLE_RESET_MS) {
+    && (explicitGreeting || !Number.isFinite(Date.parse(router.last_message_at))
+      || Date.now() - Date.parse(router.last_message_at) >= MENU_IDLE_RESET_MS)) {
     result = await query.eq('model', ROUTER_READY).eq('status', 'closed')
+      .eq('last_message_at', router.last_message_at).select('id')
+  } else if (router.model === ROUTER_READY && router.status === 'active' && explicitGreeting) {
+    // Una cotización cerrada o inexistente puede dejar una fila 'active' antigua.
+    // Aquí solo se llega si ensureBotState la clasificó como idle; no se reabre IA.
+    result = await supabaseAdmin.from('ai_conversations')
+      .update({ model: ROUTER_READY, status: 'closed', quote_session_id: null,
+        last_message_at: now, updated_at: now })
+      .eq('id', router.id).eq('model', ROUTER_READY).eq('status', 'active')
       .eq('last_message_at', router.last_message_at).select('id')
   } else {
     return null

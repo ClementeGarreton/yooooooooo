@@ -33,12 +33,11 @@ import { applyInventoryEdits, parseInventoryEdits, type CatalogInventoryItem } f
 import { answerExtras } from '@/lib/whatsapp/extrasFlow'
 import { getAvailableSlotsForDate } from '@/lib/scheduleAvailability'
 import { supabaseAdmin } from '@/lib/supabase'
-import { WHATSAPP_WELCOME, botCommand, decideBotAction, isQuoteExpired } from '@/lib/whatsapp/botRouter'
+import { WHATSAPP_WELCOME, botCommand, decideBotAction, isQuoteExpired, isGreeting } from '@/lib/whatsapp/botRouter'
 import { claimFirstWelcome, claimIncomingMessage, ensureBotState, moveIncomingToConversation, refreshQuoteActivity, releaseFailedWelcome, setBotMode, touchIdleActivity } from '@/lib/whatsapp/botStateStore'
 import type { WhatsAppBotState } from '@/lib/whatsapp/botRouter'
 
 
-const GREETING_ONLY = /^(hola|holi|buenas|buenos d[ií]as|buenas tardes|buenas noches|hey|ola)[!.\s]*$/i
 const HUMAN_REQUEST = /\b(ejecutivo|persona real|humano|asesor|hablar con alguien|atenci[oó]n humana)\b/i
 const CONFIRM_QUOTE = /^(confirmar|confirmo|confirmado|s[ií][,!.\s]+generar|generar cotizaci[oó]n|generar pdf)[!.\s]*$/i
 
@@ -205,7 +204,10 @@ async function finalizeQuote(session: QuoteSessionRow, conversationId: string, t
     customer_name: session.state.personalInfo.name,
   })
 
-  const site = (process.env.WHATSAPP_QUOTE_BASE_URL || 'https://yo-me-encargo-test97.vercel.app').replace(/\/$/, '')
+  const site = (process.env.WHATSAPP_QUOTE_BASE_URL
+    || process.env.NEXT_PUBLIC_APP_URL
+    || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : '')
+    || 'https://yo-me-encargo-test97.vercel.app').replace(/\/$/, '')
   const resumeUrl = `${site}/cotizador?session=${encodeURIComponent(session.id)}&token=${encodeURIComponent(session.resume_token)}`
 
   const summary = [
@@ -258,7 +260,9 @@ async function deactivateBot(phone: string, bot: WhatsAppBotState, mode: 'idle' 
 export async function processIncoming(message: ReturnType<typeof extractMessages>[number]) {
   // Interruptor de emergencia de Vercel. Nunca llama a OpenAI con el bot apagado.
   if (process.env.WHATSAPP_BOT_ENABLED === 'false') {
-    if (messageContext.getStore()?.platform === 'instagram') console.warn('[Instagram][motor] Bloqueado por WHATSAPP_BOT_ENABLED=false')
+    console.warn(messageContext.getStore()?.platform === 'instagram'
+      ? '[Instagram][motor] Bot deshabilitado por WHATSAPP_BOT_ENABLED=false'
+      : '[WhatsApp][motor] Bot deshabilitado por WHATSAPP_BOT_ENABLED=false')
     return
   }
   const to = message.from
@@ -269,19 +273,22 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
     content: message.text || (message.type === 'image' ? '[Imagen]' : `[${message.type}]`),
     messageType: message.type === 'image' ? 'image' : message.type === 'interactive' ? 'interactive' : 'text',
   }))) {
-    if (messageContext.getStore()?.platform === 'instagram') console.info('[Instagram][motor] Mensaje duplicado; no se responde')
+    console.info(messageContext.getStore()?.platform === 'instagram'
+      ? '[Instagram][motor] Mensaje duplicado; se omite el reenvío'
+      : '[WhatsApp][motor] Mensaje duplicado; se omite el reenvío')
     return
   }
 
   const bot = await ensureBotState(phone)
   const decision = decideBotAction(message.text, bot)
-  if (messageContext.getStore()?.platform === 'instagram') {
-    console.info('[Instagram][motor]', JSON.stringify({ decision, mode: bot.mode, greeted: Boolean(bot.greeted_at) }))
-  }
+  console.info(messageContext.getStore()?.platform === 'instagram'
+    ? '[Instagram][motor] Decisión' : '[WhatsApp][motor] Decisión', JSON.stringify({
+    decision, mode: bot.mode, greeted: Boolean(bot.greeted_at),
+  }))
 
   if (decision === 'welcome') {
     // No se crea quote_session ni se usa OpenAI por un saludo o texto cualquiera.
-    const claimAt = await claimFirstWelcome(phone)
+    const claimAt = await claimFirstWelcome(phone, bot.mode === 'idle' && isGreeting(message.text))
     if (!claimAt) return
     try {
       await sendWhatsAppText(to, WHATSAPP_WELCOME)
@@ -393,7 +400,7 @@ Parece que nos tomamos un pequeño descanso. Tu cotización anterior se cerró a
     return
   }
 
-  if (GREETING_ONLY.test(message.text) && session.current_section === 1 && !session.state.personalInfo.name) {
+  if (isGreeting(message.text) && session.current_section === 1 && !session.state.personalInfo.name) {
     await sendAndLog(conversationId, to, sectionQuestion(1, session.state))
     return
   }

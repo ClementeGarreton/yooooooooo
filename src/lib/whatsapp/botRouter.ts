@@ -39,6 +39,12 @@ export const WHATSAPP_WELCOME = [
   '*SALIR* — Finalizar la atención automática.',
 ].join('\n')
 
+/** Un saludo explícito en modo idle debe recibir respuesta, aunque existan
+ * mensajes anteriores: nunca prolongar un silencio indefinidamente con 'hola'. */
+export function isGreeting(text: string): boolean {
+  return /^¡*(hola|holi|buenas|buenos d[ií]as|buenas tardes|buenas noches|hey|ola)[!.\s]*$/i.test(text.trim())
+}
+
 export function botCommand(text: string): BotCommand {
   // Solo la palabra aislada; "quiero cotizar" NO inicia OpenAI.
   const value = text.trim().toLocaleUpperCase('es')
@@ -81,6 +87,7 @@ export function decideBotAction(text: string, state: WhatsAppBotState | null, no
   if (!state?.greeted_at) return 'welcome'
 
   if (state.mode === 'idle') {
+    if (isGreeting(text)) return 'welcome'
     const last = state.last_activity_at ? Date.parse(state.last_activity_at) : NaN
     if (!Number.isFinite(last) || now - last >= MENU_IDLE_RESET_MS) return 'welcome'
   }
