@@ -30,6 +30,7 @@ import { generateQuoteFromSession } from '@/lib/serverQuoteEngine'
 import { saveQuotePhoto } from '@/lib/whatsapp/photoStorage'
 import { canCloseInventory, isInventoryAddition, upsertInventoryPhoto } from '@/lib/whatsapp/inventoryResolution'
 import { applyInventoryEdits, parseInventoryEdits, type CatalogInventoryItem } from '@/lib/whatsapp/inventoryEdits'
+import { parseTaxDocumentChoice } from '@/lib/whatsapp/taxDocument'
 import { answerExtras } from '@/lib/whatsapp/extrasFlow'
 import { getAvailableSlotsForDate } from '@/lib/scheduleAvailability'
 import { supabaseAdmin } from '@/lib/supabase'
@@ -410,10 +411,10 @@ Parece que nos tomamos un pequeño descanso. Tu cotización anterior se cerró a
 
   // Respuesta tributaria determinista: una elección no inventa ni cambia el IVA.
   if (section === 1 && state.personalInfo.name && state.personalInfo.email && !state.taxDocument) {
-    const choice = message.text.trim().toLocaleLowerCase('es').replace(/[.!\s]+$/g, '')
-    if (choice === 'boleta' || choice === 'factura') {
-      state = { ...state, taxDocument: choice }
-      if (choice === 'factura') state.personalInfo.isCompany = true
+    const choice = parseTaxDocumentChoice(message.text)
+    if (choice) {
+      state = { ...state, taxDocument: choice,
+        personalInfo: { ...state.personalInfo, isCompany: choice === 'factura' ? true : state.personalInfo.isCompany } }
       session = await saveQuoteSession(session.id, state)
       await sendAndLog(conversationId, to, await nextQuestion(state))
     } else {
@@ -581,6 +582,15 @@ Parece que nos tomamos un pequeño descanso. Tu cotización anterior se cerró a
   const parsed = await parseGeneralWhatsAppTurn(section, state, message.text)
   await addUsage(conversationId, parsed.usage)
   state = parsed.state
+  // Si el cliente da sus datos y el tipo de documento en un mismo mensaje,
+  // guardar ambos sin obligarlo a repetir BOLETA/FACTURA.
+  if (section === 1 && !state.taxDocument && state.personalInfo.name && state.personalInfo.email) {
+    const choice = parseTaxDocumentChoice(message.text)
+    if (choice) {
+      state.taxDocument = choice
+      if (choice === 'factura') state.personalInfo.isCompany = true
+    }
+  }
   await logAction({ conversationId, action: 'quote_fields_parsed', payload: { section, patch: parsed.patch } })
 
   // WhatsApp usa la misma disponibilidad operativa que el formulario web.

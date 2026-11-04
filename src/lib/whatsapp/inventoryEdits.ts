@@ -14,10 +14,15 @@ function normalize(value: string): string {
   return value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/\b(sofas|sillones|sillon|sofa)\b/g, 'sofa')
     .replace(/\b(nevera|heladera|refri|refrigeradora)\b/g, 'refrigerador')
+    // Equivalencias comerciales chilenas: no confundir una cama matrimonial con una King/Queen.
+    .replace(/\b(cama|camas|colchon|colchones)\s+(?:de\s+)?(?:matrimonial(?:es)?|matrimonio|doble(?:s)?)\b/g, (_, noun: string) => `${noun.startsWith('colch') ? 'colchon' : 'cama'} 2 plazas`)
+    .replace(/\b(cama|camas|colchon|colchones)\s+(?:de\s+)?individual(?:es)?\b/g, (_, noun: string) => `${noun.startsWith('colch') ? 'colchon' : 'cama'} 1 plaza`)
     .replace(/\b(armario|closet|guardarropa)\b/g, 'ropero')
     .replace(/\b(comoda|gavetero)\b/g, 'cajonera')
     .replace(/\b(dos)\b/g, '2').replace(/\b(tres)\b/g, '3')
     .replace(/\b(cuatro)\b/g, '4').replace(/\b(uno|una)\b/g, '1')
+    .replace(/\b(camas|colchones)\b/g, (noun: string) => noun === 'camas' ? 'cama' : 'colchon')
+    .replace(/\bplaza\b/g, 'plazas')
     .replace(/[^a-z0-9]+/g, ' ').trim()
 }
 
@@ -37,9 +42,9 @@ export function parseInventoryEdits(text: string): InventoryEdit[] | null {
     const action = /^(quitar|eliminar|sacar)$/i.test(found[1]) ? 'remove' : 'add'
     let description = found[2].trim().replace(/[.!]+$/, '')
     let quantity: number | null = null
-    const prefix = description.match(/^(\d+|un|una|uno|dos|tres|cuatro|cinco)\s+(?:x\s+)?/i)
+    const prefix = description.match(/^(\d+|un|una|uno|otra|otro|dos|tres|cuatro|cinco)\s+(?:x\s+)?/i)
     if (prefix) {
-      const numbers: Record<string, number> = { un: 1, una: 1, uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5 }
+      const numbers: Record<string, number> = { un: 1, una: 1, uno: 1, otra: 1, otro: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5 }
       quantity = numbers[prefix[1].toLowerCase()] || Number(prefix[1])
       description = description.slice(prefix[0].length).trim()
     }

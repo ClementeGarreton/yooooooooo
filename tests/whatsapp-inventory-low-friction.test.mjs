@@ -25,3 +25,9 @@ test('incorporar un mueble en sección de extras se interpreta como inventario',
   assert.equal(isInventoryAddition('Quiero agregar embalaje'), false)
   assert.equal(isInventoryAddition('ninguno'), false)
 })
+
+test('cama matrimonial se resuelve como cama 2 plazas, nunca una plaza distinta', () => {
+  const selected = chooseClosestInventoryCandidate('cama matrimonial', candidates('Cama 1 Plaza', 'Cama 1.5 Plazas', 'Cama 2 Plazas'))
+  assert.equal(selected?.label, 'Cama 2 Plazas')
+  assert.equal(chooseClosestInventoryCandidate('cama matrimonial', candidates('Cama 1 Plaza')), null)
+})

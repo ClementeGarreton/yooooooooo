@@ -63,3 +63,39 @@ test('no interpreta charla ordinaria como edición', () => {
   assert.equal(parseInventoryEdits('Me gustaría cotizar una mudanza'), null)
   assert.equal(parseInventoryEdits('CONFIRMAR'), null)
 })
+
+const catalogCamas = [
+  { id: 'frigo', name: 'Refrigerador', is_active: true },
+  { id: 'cama2', name: 'Cama 2 Plazas', is_active: true },
+  { id: 'cama1', name: 'Cama 1 Plaza', is_active: true },
+  { id: 'cama15', name: 'Cama 1.5 Plazas', is_active: true },
+]
+
+test('reproduce caso real: QUITAR refrigerador y AÑADIR otra cama matrimonial', () => {
+  const edits = parseInventoryEdits('quitar refrigerador y añadir otra cama matrimonial')
+  assert.equal(edits.length, 2)
+  const initial = [{ catalogItemId: 'frigo', quantity: 1 }, { catalogItemId: 'cama2', quantity: 1 }, { catalogItemId: 'cama1', quantity: 2 }]
+  const result = applyInventoryEdits(initial, edits, catalogCamas)
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.items, [{ catalogItemId: 'cama2', quantity: 2 }, { catalogItemId: 'cama1', quantity: 2 }])
+  assert.deepEqual(initial[0], { catalogItemId: 'frigo', quantity: 1 }, 'no modifica la cotización original')
+})
+
+test('cama matrimonial, cama doble y cama individual mantienen su tamaño', () => {
+  for (const description of ['otra cama matrimonial', 'una cama de matrimonio', 'cama doble', 'camas matrimoniales']) {
+    const edits = parseInventoryEdits(`agregar ${description}`)
+    const result = applyInventoryEdits([{ catalogItemId: 'frigo', quantity: 1 }], edits, catalogCamas)
+    assert.equal(result.ok, true, description)
+    assert.ok(result.items.some(x => x.catalogItemId === 'cama2'), description)
+  }
+  const solo = applyInventoryEdits([{ catalogItemId: 'frigo', quantity: 1 }], parseInventoryEdits('añadir una cama individual'), catalogCamas)
+  assert.equal(solo.ok, true)
+  assert.ok(solo.items.some(x => x.catalogItemId === 'cama1'))
+})
+
+test('si la cama matrimonial no está en el catálogo, NO quita el refrigerador', () => {
+  const initial = [{ catalogItemId: 'frigo', quantity: 1 }]
+  const result = applyInventoryEdits(initial, parseInventoryEdits('quitar refrigerador y añadir otra cama matrimonial'), catalogCamas.filter(x => x.id !== 'cama2'))
+  assert.equal(result.ok, false)
+  assert.deepEqual(initial, [{ catalogItemId: 'frigo', quantity: 1 }])
+})
