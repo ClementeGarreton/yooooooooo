@@ -106,3 +106,149 @@
 .admin-panel .admin-jobs-empty {padding:30px 18px;background:#fff;border:1px solid #e2e8f1;border-radius:9px;color:#687b90;text-align:center;}
 @media(max-width:950px){.admin-panel .admin-calendar-cell{min-height:110px}.admin-panel .admin-calendar-event{font-size:9px}.admin-panel .admin-calendar-toolbar{padding:12px}}
 @media(max-width:650px){.admin-panel .admin-calendar-grid {min-width:660px}.admin-panel .admin-calendar-month {overflow-x:auto}.admin-panel .admin-jobs-filters{justify-content:flex-start}.admin-panel .admin-jobs-filters input[type=search]{flex:1}.admin-panel .admin-jobs-booking{gap:7px;padding:11px 8px}.admin-panel .admin-jobs-status{max-width:78px;white-space:normal}.admin-panel .admin-jobs-time{width:40px}}
+
+/* -----------------------------------------------------------------------
+   Interfaz de administración renovada (referencia: panel operativo 06-11).
+   Todas las reglas se limitan a /admin; no afectan al cotizador público.
+   ----------------------------------------------------------------------- */
+.admin-panel { background:#f6f8fb; color:#233b54; }
+.admin-panel .admin-sidebar { width:218px; min-width:218px; background:#1d3d61; }
+.admin-panel .admin-brand { padding:16px 13px 13px; gap:9px; }
+.admin-panel .admin-brand-mark { width:34px; height:34px; border-radius:7px; }
+.admin-panel .admin-brand strong { font-size:13px; }
+.admin-panel .admin-brand span { font-size:9px; }
+.admin-panel .admin-menu-search { margin:10px 11px 5px; padding:8px 10px; border-radius:7px; }
+.admin-panel .admin-menu-group { margin-top:11px; }
+.admin-panel .admin-menu-item { min-height:30px; padding:6px 10px; font-size:12px; border-radius:7px; gap:9px; }
+.admin-panel .admin-menu-item.is-current { background:#315e87; box-shadow:none; }
+.admin-panel .admin-menu-nav { padding-bottom:10px; }
+.admin-panel .admin-sidebar-bottom { padding:10px 13px; }
+.admin-panel .admin-topbar { min-height:75px; padding:15px 24px; border-bottom:1px solid #e6ebf1; background:#f8fafc; }
+.admin-panel .admin-breadcrumb { display:none; }
+.admin-panel .admin-page-heading h1 { font-size:20px; line-height:1.25; color:#192b3f; }
+.admin-panel .admin-page-heading p { margin-top:2px; font-size:11px; }
+.admin-panel .admin-main { max-width:none; padding:17px 22px 30px; }
+.admin-panel .admin-foot { background:transparent; justify-content:center; border-top:1px solid #e3e7ed; }
+.admin-panel .admin-foot > span { margin-left:5px; }
+.admin-panel .admin-action { padding:7px 10px; background:#fff; }
+.admin-panel .admin-range-tabs { background:#f2f5f8; border:1px solid #e2e9f1; border-radius:8px; }
+.admin-panel .admin-range-tabs button { padding:6px 10px; font-size:11px; }
+.admin-panel .admin-range-tabs button.is-active { border:1px solid #dbe4ee; }
+
+.admin-panel .admin-home-view { display:grid; gap:14px; }
+.admin-panel .admin-home-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.admin-panel .admin-home-summary { font-size:11px; color:#74859b; }
+.admin-panel .admin-home-stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:13px; }
+.admin-panel .admin-home-stat { background:#fff; border:1px solid #e6ebf1; border-radius:11px; min-height:106px; padding:15px 18px; display:flex; justify-content:space-between; align-items:flex-start; box-shadow:0 2px 4px rgba(30,55,80,.025); }
+.admin-panel .admin-home-stat div { display:flex;flex-direction:column;gap:6px; }
+.admin-panel .admin-home-stat div > span { font-size:11px;color:#687990;font-weight:600; }
+.admin-panel .admin-home-stat strong { font-size:29px;line-height:1;font-weight:800;color:#13263c; }
+.admin-panel .admin-home-stat small { color:#b57c08;font-size:10px; }
+.admin-panel .admin-home-stat:last-child small { color:#6d85a0; }
+.admin-panel .admin-home-stat-icon { background:#ebf3fc; border-radius:11px;width:36px;height:36px;display:grid;place-items:center;color:#4b8ac9; }
+.admin-panel .admin-home-stat-icon.amber { background:#fff5d8;color:#e7ac2b; }
+.admin-panel .admin-home-stat-icon.indigo { background:#edf3ff;color:#649ce4; }
+.admin-panel .admin-home-section { background:#fff; border:1px solid #e4e9f0; border-radius:11px; padding:13px 14px 14px; box-shadow:0 2px 8px rgba(25,60,95,.028); min-width:0; }
+.admin-panel .admin-home-section-head { display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px; }
+.admin-panel .admin-home-section-head h2 { color:#192e48;font-size:13px;font-weight:800; }
+.admin-panel .admin-home-section-head h2 span {color:#8191a4;font-weight:500; }
+.admin-panel .admin-home-section-head button, .admin-panel .admin-approval-row button {background:#fff;color:#315e92;border:1px solid #85a7cf;border-radius:6px;padding:6px 11px;font-size:10px;font-weight:700; }
+.admin-panel .admin-home-section-head button:hover, .admin-panel .admin-approval-row button:hover { background:#edf6ff; }
+.admin-panel .admin-home-day { margin:12px 0 0; }
+.admin-panel .admin-home-day h3 { color:#435b72;font-size:11px;font-weight:700;text-transform:capitalize;margin:0 0 6px; }
+.admin-panel .admin-home-booking { border:1px solid #edf0f4; background:#f8fafc; border-radius:6px; margin:5px 0; padding:7px 9px; transition:background .15s; }
+.admin-panel .admin-home-booking:hover { background:#f0f6fb; }
+.admin-panel .admin-home-booking-open { display:flex;gap:10px;align-items:flex-start;width:100%;text-align:left;background:transparent; }
+.admin-panel .admin-home-booking-check { color:#5cc283; padding-top:4px; flex-shrink:0; }
+.admin-panel .admin-home-booking-main { display:flex;flex-direction:column;gap:2px;flex:1;min-width:0; }
+.admin-panel .admin-home-booking-main > strong { font-size:11px;line-height:1.4;color:#19314e; }
+.admin-panel .admin-home-quote-id { font-size:10px; font-weight:500; color:#75879c; }
+.admin-panel .admin-home-booking-metadata { color:#678097;font-size:10px; }
+.admin-panel .admin-home-booking-address { display:block;color:#576c83;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%; }
+.admin-panel .admin-home-booking-price { display:flex;flex-direction:column;gap:5px;align-items:flex-end;min-width:82px;padding-top:2px; }
+.admin-panel .admin-home-booking-price strong {color:#26435c;font-size:12px;white-space:nowrap; }
+.admin-panel .admin-home-status { font-size:9px;font-weight:650; }
+.admin-panel .admin-home-status.confirmed,.admin-panel .admin-home-status.completed {color:#229b67;}
+.admin-panel .admin-home-status.pending {color:#bd7d15;}
+.admin-panel .admin-home-status.cancelled {color:#cf4e60;}
+.admin-panel .admin-home-booking-actions { margin:4px 0 0 28px; display:flex;gap:5px;align-items:center; flex-wrap:wrap; }
+.admin-panel .admin-home-booking-actions a,.admin-panel .admin-home-booking-actions button { display:inline-flex;align-items:center;gap:4px;border:1px solid #d7e5f0;border-radius:5px;color:#3d638c;background:#fff;font-size:9px;padding:4px 7px; }
+.admin-panel .admin-home-booking-actions a:first-child {border-color:#b3ddc7;color:#237448;}
+.admin-panel .admin-home-booking-actions a:hover,.admin-panel .admin-home-booking-actions button:hover {background:#eaf4fc;}
+.admin-panel .admin-home-empty {color:#8b9aad;text-align:center;padding:19px 5px;font-size:12px;}
+.admin-panel .admin-home-quick-actions {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}
+.admin-panel .admin-home-quick-actions button {display:flex;align-items:center;justify-content:center;gap:7px;border:1px solid #87add3;border-radius:6px;color:#356796;padding:9px;font-size:11px;background:#fff;}
+.admin-panel .admin-home-quick-actions button:hover {background:#f0f7ff;}
+.admin-panel .admin-home-extra-note { color:#98a7b8;font-size:10px;text-align:center; }
+
+.admin-panel .admin-approval-view {display:grid;gap:16px;}
+.admin-panel .admin-approval-heading {display:flex;justify-content:space-between;align-items:center;gap:14px;}
+.admin-panel .admin-approval-heading h2 {font-size:20px;font-weight:800;}
+.admin-panel .admin-approval-heading p {color:#647890;font-size:11px;}
+.admin-panel .admin-approval-heading button {display:flex;align-items:center;gap:6px;border:1px solid #bfd0e0;border-radius:7px;background:#fff;padding:8px 10px;color:#315e92;font-size:11px;}
+.admin-panel .admin-approval-card {background:#fff;border:1px solid #e2e9f0;border-radius:11px;padding:15px 17px;}
+.admin-panel .admin-approval-card-head {display:flex;justify-content:space-between;align-items:center;gap:10px;padding-bottom:10px;}
+.admin-panel .admin-approval-card-head h3 {font-size:14px;font-weight:800;color:#243b54;}
+.admin-panel .admin-approval-card-head p {font-size:11px;color:#7d8c9c;margin-top:4px;}
+.admin-panel .admin-approval-counter {background:#fff9e9;color:#ad790f;font-size:10px;font-weight:700;padding:5px 10px;border-radius:30px;white-space:nowrap;}
+.admin-panel .admin-approval-row {display:flex;gap:14px;align-items:center;justify-content:space-between;border-top:1px solid #e7edf4;padding:11px 2px;}
+.admin-panel .admin-approval-row strong {font-size:12px;}
+.admin-panel .admin-approval-row p,.admin-panel .admin-approval-row small {color:#75879a;font-size:10px;display:block;margin-top:3px;}
+.admin-panel .admin-approval-empty {display:flex;gap:8px;justify-content:center;align-items:center;font-size:12px;color:#8594a5;padding:20px;}
+.admin-panel .admin-approval-unavailable {display:flex;gap:9px;align-items:center;font-size:11px;color:#718398;padding:16px;background:#f7f9fc;border-radius:8px;}
+
+.admin-panel .admin-jobs-top {display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;}
+.admin-panel .admin-jobs-top h2 {font-size:20px;font-weight:800;color:#1f344e;}
+.admin-panel .admin-jobs-top p {font-size:11px;color:#728398;margin-top:6px;}
+.admin-panel .admin-jobs-views {display:flex;gap:4px;padding:4px;border-radius:8px;background:#eef2f6;}
+.admin-panel .admin-jobs-views button {font-size:11px;color:#62758b;border-radius:6px;padding:7px 10px;}
+.admin-panel .admin-jobs-views button.active {background:#fff;color:#254e7c;box-shadow:0 1px 5px #cad5e555;}
+.admin-panel .admin-jobs-views button:disabled {opacity:.4;cursor:not-allowed;}
+.admin-panel .admin-jobs-counter {font-size:10px;color:#8b9aac;}
+.admin-panel .admin-jobs-filters {margin:0;padding:5px 0;}
+.admin-panel .admin-jobs-search {display:flex;align-items:center;gap:6px;border:1px solid #dce5ee;background:#fff;border-radius:7px;padding:0 9px;min-width:188px;}
+.admin-panel .admin-jobs-filters .admin-jobs-search input {border:0!important;outline:none;min-width:150px;width:100%;padding:8px 2px;font-size:11px;}
+.admin-panel .admin-jobs-day h3 {background:#f9fafb;padding:11px 14px;font-size:11px;}
+.admin-panel .admin-jobs-booking {padding:11px 13px;gap:12px;min-height:66px;border-left:3px solid #4386ee;}
+.admin-panel .admin-jobs-booking:has(.admin-jobs-status.pending) {border-left-color:#ef818d;}
+.admin-panel .admin-jobs-time {width:52px;font-size:11px;}
+.admin-panel .admin-jobs-details {gap:4px;}
+.admin-panel .admin-jobs-details strong span {font-size:10px;font-weight:400;color:#8998a8;}
+.admin-panel .admin-jobs-details > span {font-size:10px;}
+.admin-panel .admin-jobs-details small {font-size:9px;}
+.admin-panel .admin-jobs-vehicle {max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-radius:13px;padding:5px 7px;font-size:9px;background:#dff7fd;color:#087c97;}
+.admin-panel .admin-jobs-status {background:#e4f8e7;color:#248449;}
+.admin-panel .admin-jobs-status.pending {background:#fff4cf;color:#9c7522;}
+.admin-panel .admin-jobs-status.completed {background:#e0f1fa;color:#2d7eac;}
+
+/* Tabla de Reservas: densidad visual y jerarquía de la captura, sin reemplazar lógica. */
+.admin-panel .admin-bookings-layout {gap:12px;}
+.admin-panel .admin-bookings-layout > div:first-child h2 {font-size:19px;}
+.admin-panel .admin-bookings-layout table thead {background:#f8fafc;}
+.admin-panel .admin-bookings-layout table th {font-size:10px;font-weight:700;padding:10px 11px;}
+.admin-panel .admin-bookings-layout table td {font-size:11px;padding:9px 11px;border-bottom-color:#edf1f5;}
+.admin-panel .admin-bookings-layout table tbody tr:hover {background:#f6faff;}
+
+@media (max-width:900px) {
+  .admin-panel .admin-topbar {padding:12px 16px;}
+  .admin-panel .admin-home-stats {gap:8px;}
+  .admin-panel .admin-home-stat {padding:11px;}
+  .admin-panel .admin-home-booking-price {min-width:60px;}
+}
+@media (max-width:850px) {
+  .admin-panel .admin-sidebar {min-width:218px;}
+  .admin-panel .admin-home-stats {grid-template-columns:repeat(3,minmax(0,1fr));}
+}
+@media (max-width:560px) {
+  .admin-panel .admin-home-stats {grid-template-columns:repeat(2,minmax(0,1fr));}
+  .admin-panel .admin-home-stats .admin-home-stat:last-child {grid-column:span 2;}
+  .admin-panel .admin-home-booking-open {gap:6px;}
+  .admin-panel .admin-home-booking-address {white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}
+  .admin-panel .admin-home-booking-price {min-width:72px;}
+  .admin-panel .admin-home-quick-actions {grid-template-columns:1fr;}
+  .admin-panel .admin-jobs-vehicle {display:none;}
+  .admin-panel .admin-approval-row {align-items:flex-start;}
+}
+.admin-panel .admin-home-range{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.admin-panel .admin-home-range label{font-size:11px;color:#53697f;}
+.admin-panel .admin-home-range input{margin-left:4px;background:#fff;border:1px solid #d6e0eb;border-radius:7px;padding:6px 8px;color:#304d68;}

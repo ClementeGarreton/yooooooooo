@@ -23,7 +23,7 @@ type AdminMenuItem = {
 const groups: { title: string; items: AdminMenuItem[] }[] = [
   { title: 'Operación', items: [
     { id: 'dashboard', label: 'Inicio', icon: LayoutDashboard },
-    { id: 'approvals', label: 'Por aprobar', icon: BadgeCheck, unavailable: true },
+    { id: 'approvals', label: 'Por aprobar', icon: BadgeCheck },
     { id: 'calendar', label: 'Calendario', icon: CalendarDays },
     { id: 'bookings', label: 'Reservas', icon: CalendarCheck2 },
     { id: 'jobs', label: 'Trabajos', icon: ClipboardList },
@@ -53,8 +53,9 @@ const groups: { title: string; items: AdminMenuItem[] }[] = [
 ]
 
 const sectionDescriptions: Record<string, string> = {
-  dashboard: 'Lo de hoy y lo pendiente de la operación.',
-  calendar: 'Agenda de las próximas siete fechas disponibles.',
+  dashboard: 'Lo de hoy y lo pendiente. La operación de este mes.',
+  approvals: 'Solicitudes y reservas que requieren atención.',
+  calendar: 'Reservas organizadas por mes y día.',
   bookings: 'Consultar, editar, cobrar y cerrar reservas.',
   jobs: 'Trabajos confirmados y próximas atenciones.',
   prospects: 'Cotizaciones y oportunidades comerciales.',
@@ -149,7 +150,7 @@ export default function AdminShell({ activeTab, onSelect, onRefresh, onLogout, o
           </div>
         </header>
         <main className="admin-main" id="admin-content">{children}</main>
-        <footer className="admin-foot">Yo Me Encargo · Administración <span>Interfaz adaptada · Diseño original por <a href="https://vanlookstudio.com" target="_blank" rel="noopener noreferrer">vanlookstudio.com</a> e <a href="https://iaenblanco.com" target="_blank" rel="noopener noreferrer">IAenBlanco</a></span></footer>
+        <footer className="admin-foot">Yo Me Encargo · Administración <span>Panel renovado v2 · Diseño original por <a href="https://vanlookstudio.com" target="_blank" rel="noopener noreferrer">vanlookstudio.com</a> e <a href="https://iaenblanco.com" target="_blank" rel="noopener noreferrer">IAenBlanco</a></span></footer>
       </div>
     </div>
   )

@@ -94,7 +94,7 @@ export default function CalendarioMensual({ onOpen }: Props) {
           <button type="button" onClick={() => changeMonth(1)} aria-label="Mes siguiente"><ChevronRight size={20}/></button>
           <button type="button" className="admin-calendar-today" onClick={() => { setYear(Number(today.slice(0, 4))); setMonth(Number(today.slice(5, 7)) - 1) }}>Hoy</button>
         </div>
-        <div className="admin-calendar-legend"><span><i className="dot is-confirmed"/> Confirmadas</span><span><i className="dot is-pending"/> Pendientes</span><span><i className="dot is-completed"/> Completadas</span><button type="button" onClick={() => void reload()} disabled={loading}><RefreshCw size={14}/>{loading ? 'Cargando…' : 'Actualizar'}</button></div>
+        <div className="admin-calendar-legend"><span><i className="dot is-confirmed"/> Confirmadas</span><span><i className="dot is-pending"/> Pendientes</span><span><i className="dot is-completed"/> Finalizadas</span><button type="button" onClick={() => void reload()} disabled={loading}><RefreshCw size={14}/>{loading ? 'Cargando…' : 'Actualizar'}</button></div>
       </div>
       {error && <p role="alert" className="admin-calendar-error">No se pudo consultar el calendario: {error}. No se están mostrando reservas inventadas.</p>}
       <div className="admin-calendar-grid" aria-label={`Calendario de ${monthLabel(year, month)}`}>
@@ -113,7 +113,7 @@ export default function CalendarioMensual({ onOpen }: Props) {
           </div>
         })}
       </div>
-      {!loading && !error && <p className="admin-calendar-note">{bookings.length} reservas consultadas desde la API actual. Pulsa una para abrir su gestión.</p>}
+      {!loading && !error && <p className="admin-calendar-note">{bookings.length} reservas disponibles. Pulsa una para abrir su ficha de gestión.</p>}
     </div>
   )
 }
