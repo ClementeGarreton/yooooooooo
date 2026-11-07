@@ -238,7 +238,7 @@ export default function AdminDashboard() {
 
   // Abre la reserva en una pestaña nueva, ya filtrada en la pestaña Reservas, para tener
   // ahí los botones de acción (editar, marcar pagado, completar, PDF, etc.).
-  const openBookingInNewTab = (booking: TodayBooking) => {
+  const openBookingInNewTab = (booking: Pick<TodayBooking, 'quote_id' | 'client_name'>) => {
     const term = booking.quote_id || booking.client_name
     const url = `/admin?tab=bookings&q=${encodeURIComponent(term)}`
     window.open(url, '_blank', 'noopener')
