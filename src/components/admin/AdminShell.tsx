@@ -31,15 +31,15 @@ const groups: { title: string; items: AdminMenuItem[] }[] = [
   { title: 'Ventas', items: [
     { id: 'prospects', label: 'Prospectos', icon: UserPlus },
     { id: 'new-quote', label: 'Nueva cotización', icon: PlusCircle, link: '/cotizador' },
-    { id: 'marketing', label: 'Marketing', icon: Megaphone, unavailable: true },
+    { id: 'marketing', label: 'Marketing', icon: Megaphone },
   ] },
   { title: 'Clientes', items: [
     { id: 'customers', label: 'Clientes', icon: Users },
-    { id: 'companies', label: 'Empresas', icon: Building2, unavailable: true },
+    { id: 'companies', label: 'Empresas', icon: Building2 },
   ] },
   { title: 'Finanzas', items: [
     { id: 'finance', label: 'Finanzas', icon: Wallet },
-    { id: 'invoicing', label: 'Emisión de facturas', icon: FileText, unavailable: true },
+    { id: 'invoicing', label: 'Emisión de facturas', icon: FileText },
   ] },
   { title: 'Equipo', items: [
     { id: 'fleet', label: 'Flota y equipo', icon: Truck },
@@ -60,7 +60,10 @@ const sectionDescriptions: Record<string, string> = {
   jobs: 'Trabajos confirmados y próximas atenciones.',
   prospects: 'Cotizaciones y oportunidades comerciales.',
   customers: 'Personas atendidas y sus fichas.',
-  finance: 'Ingresos, saldos pendientes y resultados.',
+  finance: 'Cobros, servicios y resúmenes financieros.',
+  marketing: 'Contactos, campañas y referidos.',
+  companies: 'Clientes empresas y sus servicios.',
+  invoicing: 'Servicios empresariales y base de facturación.',
   fleet: 'Camiones, conductores y accesos.',
   schedule: 'Bloqueos y disponibilidad de la agenda.',
   activity: 'Historial de operaciones del sistema.',
@@ -150,7 +153,7 @@ export default function AdminShell({ activeTab, onSelect, onRefresh, onLogout, o
           </div>
         </header>
         <main className="admin-main" id="admin-content">{children}</main>
-        <footer className="admin-foot">Yo Me Encargo · Administración <span>Panel renovado v2 · Diseño original por <a href="https://vanlookstudio.com" target="_blank" rel="noopener noreferrer">vanlookstudio.com</a> e <a href="https://iaenblanco.com" target="_blank" rel="noopener noreferrer">IAenBlanco</a></span></footer>
+        <footer className="admin-foot">Yo Me Encargo · Administración <span>Panel renovado v3 · Diseño original por <a href="https://vanlookstudio.com" target="_blank" rel="noopener noreferrer">vanlookstudio.com</a> e <a href="https://iaenblanco.com" target="_blank" rel="noopener noreferrer">IAenBlanco</a></span></footer>
       </div>
     </div>
   )

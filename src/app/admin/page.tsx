@@ -23,6 +23,7 @@ import CalendarioMensual from '@/components/admin/CalendarioMensual'
 import TrabajosPorFecha from '@/components/admin/TrabajosPorFecha'
 import InicioOperativo from '@/components/admin/InicioOperativo'
 import PanelAprobaciones from '@/components/admin/PanelAprobaciones'
+import { MarketingRecuperado, EmpresasRecuperado, FacturasRecuperado, FinanzasRecuperadas, PoliticasBorrador, ReglaPagoBorrador, ClientesRecuperados } from '@/components/admin/ModulosRecuperados'
 import { 
   Calendar, 
   Truck, 
@@ -31,6 +32,7 @@ import {
   Settings, 
   Users, 
   DollarSign,
+  FileText,
   AlertCircle,
   CheckCircle,
   XCircle,
@@ -194,6 +196,9 @@ export default function AdminDashboard() {
     { id: 'bookings', name: 'Reservas', icon: Calendar },
     { id: 'jobs', name: 'Trabajos', icon: Truck },
     { id: 'finance', name: 'Finanzas', icon: DollarSign },
+    { id: 'marketing', name: 'Marketing', icon: MessageSquareText },
+    { id: 'companies', name: 'Empresas', icon: Users },
+    { id: 'invoicing', name: 'Emisión de facturas', icon: DollarSign },
     { id: 'prospects', name: 'Prospectos', icon: UserPlus },
     { id: 'customers', name: 'Clientes', icon: Users },
     { id: 'fleet', name: 'Flota', icon: Truck },
@@ -207,7 +212,9 @@ export default function AdminDashboard() {
     { id: 'pricing', name: 'Precios', icon: DollarSign },
     { id: 'schedule-config', name: 'Horarios', icon: Clock },
     { id: 'inventory', name: 'Inventario', icon: Package },
-    { id: 'users', name: 'Usuarios', icon: ShieldCheck },
+    { id: 'worker-pay', name: 'Pago a trabajadores', icon: DollarSign },
+    { id: 'policies', name: 'Políticas y términos', icon: FileText },
+    { id: 'users', name: 'Usuarios y permisos', icon: ShieldCheck },
   ]
 
   const getStatusColor = (status: string) => {
@@ -372,17 +379,13 @@ export default function AdminDashboard() {
           </div>
         )}
 
-        {activeTab === 'finance' && (
-          <div className="space-y-5">
-            <div className="admin-section-toolbar"><div><h2>Finanzas</h2><p>Indicadores existentes · no se modificaron fórmulas ni datos</p></div></div>
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-              <Card className="p-5"><p className="text-sm text-gray-600">Cobrado este mes</p><p className="mt-3 text-2xl font-bold text-green-700">${(stats?.revenue?.paid ?? 0).toLocaleString('es-CL')}</p><p className="mt-2 text-xs text-gray-500">{stats?.revenue?.paidCount ?? 0} reservas pagadas</p></Card>
-              <Card className="p-5"><p className="text-sm text-gray-600">Por cobrar</p><p className="mt-3 text-2xl font-bold text-amber-700">${(stats?.revenue?.pending ?? 0).toLocaleString('es-CL')}</p><p className="mt-2 text-xs text-gray-500">{stats?.revenue?.pendingCount ?? 0} reservas con saldo</p></Card>
-              <Card className="p-5"><p className="text-sm text-gray-600">Cotizaciones pendientes</p><p className="mt-3 text-2xl font-bold text-blue-700">${(stats?.outstandingQuotes?.total ?? 0).toLocaleString('es-CL')}</p><p className="mt-2 text-xs text-gray-500">{stats?.outstandingQuotes?.count ?? 0} cotizaciones sin reserva</p></Card>
-            </div>
-            <DashboardCharts />
-          </div>
-        )}
+        {activeTab === 'finance' && <FinanzasRecuperadas onOpen={openBookingInNewTab} />}
+
+        {activeTab === 'marketing' && <MarketingRecuperado />}
+
+        {activeTab === 'companies' && <EmpresasRecuperado onOpen={openBookingInNewTab} />}
+
+        {activeTab === 'invoicing' && <FacturasRecuperado onOpen={openBookingInNewTab} />}
 
         {/* Bookings Tab */}
         {activeTab === 'bookings' && <BookingsManagement initialSearch={bookingsSearch} />}
@@ -390,7 +393,7 @@ export default function AdminDashboard() {
         {/* Prospects Tab */}
         {activeTab === 'prospects' && <ProspectsManagement />}
 
-        {activeTab === 'customers' && <AttendedCustomers />}
+        {activeTab === 'customers' && <ClientesRecuperados onOpen={openBookingInNewTab} onSelect={setActiveTab} />}
 
         {activeTab === 'activity' && <ActivityLog />}
 
@@ -411,7 +414,7 @@ export default function AdminDashboard() {
         {activeTab === 'settings' && (
           <div className="space-y-6">
             {/* Settings Sub-tabs */}
-            <div className="flex space-x-1 bg-gray-100 p-1 rounded-lg">
+            <div className="flex flex-wrap gap-1 bg-gray-100 p-1 rounded-lg">
               {settingsTabs.map((tab) => (
                 <button
                   key={tab.id}
@@ -434,6 +437,8 @@ export default function AdminDashboard() {
             {activeSettingsTab === 'pricing' && <PricingConfiguration />}
             {activeSettingsTab === 'schedule-config' && <ScheduleConfiguration />}
             {activeSettingsTab === 'inventory' && <ItemsManagement />}
+            {activeSettingsTab === 'worker-pay' && <ReglaPagoBorrador />}
+            {activeSettingsTab === 'policies' && <PoliticasBorrador />}
             {activeSettingsTab === 'users' && <UsersManagement />}
           </div>
         )}

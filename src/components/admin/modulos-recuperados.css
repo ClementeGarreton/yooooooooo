@@ -1,0 +1,64 @@
+/* Estilo de las vistas secundarias recuperadas. Limitado al contenedor /admin. */
+.admin-panel .admin-recovered-view {display:grid;gap:15px;color:#243850;}
+.admin-panel .admin-recovered-toolbar {display:flex;justify-content:space-between;align-items:center;gap:15px;flex-wrap:wrap;}
+.admin-panel .admin-recovered-toolbar h2 {font-size:20px;line-height:1.35;font-weight:800;color:#13283f;}
+.admin-panel .admin-recovered-toolbar p,.admin-panel .admin-recovered-muted{color:#6d7c90;font-size:12px;line-height:1.5;margin-top:4px;}
+.admin-panel .admin-recovered-actions {display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.admin-panel .admin-recovered-outline,.admin-panel .admin-recovered-primary {font-size:12px;border-radius:7px;min-height:33px;padding:7px 11px;display:inline-flex;align-items:center;justify-content:center;gap:7px;font-weight:650;transition:background .16s;}
+.admin-panel .admin-recovered-outline {background:white;border:1px solid #aac0da;color:#25517f;}
+.admin-panel .admin-recovered-outline:hover {background:#eef5fc;}
+.admin-panel .admin-recovered-primary{background:#2d5d93;border:1px solid #2d5d93;color:white;}
+.admin-panel .admin-recovered-primary:hover{background:#224b77;}
+.admin-panel .admin-recovered-outline:disabled,.admin-panel .admin-recovered-primary:disabled{opacity:.5;cursor:wait;}
+.admin-panel .admin-recovered-tabs {display:flex;gap:5px;align-items:center;flex-wrap:wrap;padding:6px;background:#edf1f6;border-radius:9px;width:fit-content;max-width:100%;}
+.admin-panel .admin-recovered-tabs button {font-size:12px;border-radius:6px;color:#536980;min-height:30px;padding:6px 11px;font-weight:650;white-space:nowrap;}
+.admin-panel .admin-recovered-tabs button.active{background:#fff;box-shadow:0 1px 5px #c6d2e655;color:#204f84;}
+.admin-panel .admin-recovered-card{border-radius:11px;background:white;border:1px solid #e0e8f0;padding:17px;display:grid;gap:13px;min-width:0;box-shadow:0 2px 7px #10284206;}
+.admin-panel .admin-recovered-card-head{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;}
+.admin-panel .admin-recovered-card-head h3,.admin-panel .admin-recovered-subtitle{font-size:14px;color:#213955;font-weight:800;}
+.admin-panel .admin-recovered-subtitle {margin-top:5px;}
+.admin-panel .admin-recovered-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;}
+.admin-panel .admin-recovered-metric{background:white;border:1px solid #e1e8ef;border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:7px;min-width:0;}
+.admin-panel .admin-recovered-metric span{font-size:11px;color:#6f7f91;font-weight:650;}
+.admin-panel .admin-recovered-metric strong{font-size:22px;line-height:1.2;color:#183252;overflow-wrap:anywhere;}
+.admin-panel .admin-recovered-metric small{color:#8a97a8;font-size:10px;line-height:1.4;}
+.admin-panel .admin-recovered-notice{display:flex;align-items:flex-start;gap:10px;border:1px solid #f3dfaa;border-radius:9px;background:#fffaf0;padding:12px;color:#96722f;}
+.admin-panel .admin-recovered-notice svg{flex-shrink:0;margin-top:2px;}
+.admin-panel .admin-recovered-notice strong{display:block;font-size:12px;color:#73541e;}
+.admin-panel .admin-recovered-notice p{font-size:11px;color:#7d6c4a;margin-top:3px;line-height:1.5;}
+.admin-panel .admin-recovered-error{display:flex;gap:8px;align-items:center;color:#ab324b;background:#fff4f4;border-radius:8px;padding:10px 12px;font-size:12px;border:1px solid #f1c5c9;}
+.admin-panel .admin-recovered-empty{font-size:12px;color:#8c9aab;text-align:center;padding:25px 10px;}
+.admin-panel .admin-recovered-search{border:1px solid #d8e1ed;background:#fff;display:flex;gap:8px;align-items:center;color:#6c85a0;border-radius:7px;padding:6px 10px;width:100%;max-width:410px;}
+.admin-panel .admin-recovered-search input{font-size:12px;background:transparent;min-width:0;width:100%;border:0;outline:none;color:#243952;}
+.admin-panel .admin-recovered-table-wrap{overflow:auto;width:100%;}
+.admin-panel .admin-recovered-table{border-collapse:collapse;width:100%;font-size:12px;text-align:left;}
+.admin-panel .admin-recovered-table th{background:#f7f9fb;color:#667b91;font-size:10px;text-transform:uppercase;letter-spacing:.25px;padding:11px 10px;font-weight:800;white-space:nowrap;}
+.admin-panel .admin-recovered-table td{padding:11px 10px;border-bottom:1px solid #edf1f5;color:#3e5369;max-width:300px;overflow-wrap:anywhere;vertical-align:middle;}
+.admin-panel .admin-recovered-table tr:hover td{background:#f9fcff;}
+.admin-panel .admin-recovered-table td strong{font-weight:750;color:#263e59;}
+.admin-panel .admin-recovered-pill{display:inline-flex;align-items:center;background:#e9f5ee;color:#317455;padding:5px 9px;border-radius:999px;font-size:10px;font-weight:700;}
+.admin-panel .admin-recovered-secondary{display:block;font-size:10px;color:#8995a4;margin-top:4px;}
+.admin-panel .admin-recovered-link{color:#255b9a;font-size:11px;font-weight:700;text-decoration:underline;text-decoration-color:#a8c9e9;text-underline-offset:2px;}
+.admin-panel .admin-recovered-link:hover{color:#193e69;}
+.admin-panel .admin-recovered-month{display:flex;align-items:center;gap:7px;font-size:11px;color:#6b7c8d;font-weight:650;}
+.admin-panel .admin-recovered-month input,.admin-panel .admin-recovered-label input{border:1px solid #ced9e6;background:white;color:#263f5a;border-radius:6px;padding:7px;font-size:12px;}
+.admin-panel .admin-recovered-group{border:1px solid #e5edf4;border-radius:8px;overflow:hidden;}
+.admin-panel .admin-recovered-group-head{display:flex;justify-content:space-between;gap:10px;background:#f7f9fc;padding:11px 13px;font-size:12px;}
+.admin-panel .admin-recovered-group-head span{color:#8291a1;}
+.admin-panel .admin-recovered-item{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px 13px;font-size:11px;border-top:1px solid #edf1f5;}
+.admin-panel .admin-recovered-label{display:flex;flex-direction:column;gap:6px;font-size:12px;color:#52687f;font-weight:650;}
+.admin-panel .admin-recovered-textarea{width:100%;max-width:100%;font-family:inherit;font-size:12px;line-height:1.6;min-height:200px;border:1px solid #cbd9e7;color:#1e3e60;padding:12px;outline:none;border-radius:7px;resize:vertical;}
+.admin-panel .admin-recovered-textarea:focus{border-color:#4782b7;box-shadow:0 0 0 2px #d8e9f7;}
+.admin-panel .admin-recovered-input-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;}
+@media(max-width:1050px){.admin-panel .admin-recovered-metrics{grid-template-columns:repeat(2,minmax(0,1fr));}}
+@media(max-width:650px){.admin-panel .admin-recovered-metrics,.admin-panel .admin-recovered-input-grid{grid-template-columns:1fr;}.admin-panel .admin-recovered-toolbar h2{font-size:17px;}.admin-panel .admin-recovered-table{font-size:11px;}.admin-panel .admin-recovered-card{padding:12px;}}
+.admin-panel .admin-task-form {display:flex;gap:8px;flex-wrap:wrap;}
+.admin-panel .admin-task-form input {flex:1;min-width:160px;border:1px solid #ccdcea;border-radius:7px;padding:9px 11px;font-size:12px;outline:none;}
+.admin-panel .admin-task-form button {display:inline-flex;align-items:center;gap:6px;background:#2a5c93;color:white;border-radius:7px;padding:9px 12px;font-size:12px;}
+.admin-panel .admin-task-form button:disabled {opacity:.5;cursor:not-allowed;}
+.admin-panel .admin-local-task {display:flex;align-items:center;justify-content:space-between;gap:15px;border:1px solid #e5edf4;border-radius:7px;padding:10px;}
+.admin-panel .admin-local-task label{display:flex;align-items:center;gap:10px;color:#2c4965;font-size:12px;}
+.admin-panel .admin-local-task .done{text-decoration:line-through;color:#8fa1b2;}
+.admin-panel .admin-local-task button {color:#a23e51;padding:4px;}
+
+.admin-panel .admin-recovered-label select{background:white;color:#284664;border:1px solid #d2deea;border-radius:6px;padding:7px 10px;font-size:12px;}
