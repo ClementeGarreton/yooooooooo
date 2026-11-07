@@ -1,0 +1,36 @@
+YO ME ENCARGO — ADAPTACIÓN VISUAL DE /admin (06-11-2026)
+
+ORIGEN:
+- Parte de YoMeEncargo_PanelAdmin_Corregido_Build.zip, que incluía la reparación del error de tipos en Vercel.
+- Usa las cinco capturas recientes del panel como referencia visual.
+- El nuevo archivo yomeencargo.cl(1).zip NO contiene /admin ni sus scripts: sólo /admin/login. Por tanto NO es una copia exacta de la versión más nueva.
+
+CAMBIOS LIMITADOS AL FRONTEND DE /admin:
+1) Calendario ahora muestra una cuadrícula mensual con navegación entre meses,
+   indicadores de estado y apertura de reservas.
+2) Trabajos agrupa reservas operativas por día/hora y ofrece filtros de período y búsqueda.
+3) Ambas vistas consultan /api/admin/bookings, endpoint YA existente en el proyecto.
+4) La pestaña Reservas, autenticación y el resto del sistema permanecen intactos.
+
+ARCHIVOS NUEVOS:
+- src/components/admin/CalendarioMensual.tsx
+- src/components/admin/TrabajosPorFecha.tsx
+
+ARCHIVOS MODIFICADOS:
+- src/app/admin/page.tsx
+- src/components/admin/admin-shell.css
+
+LIMITACIONES:
+- El backend del proyecto no tiene equivalentes confirmados de asignación de cuadrillas,
+  aprobaciones de trabajadores y documentos/gastos presentes en las capturas. No se
+  fabrican datos ni se habilitan operaciones inexistentes.
+- El calendario mostrará exclusivamente reservas devueltas por la API actual.
+- El nuevo ZIP de la web corresponde a la página de acceso, así que la reproducción
+  no es pixel-perfect ni recupera la lógica original del panel remoto.
+- Sintaxis TSX comprobada (3 archivos). No se completó npm ci/build porque en el
+  entorno de ejecución faltaron paquetes descargables. Probar primero en Vercel Preview.
+
+SEGURIDAD Y PUBLICACIÓN:
+- No se incorporaron respuestas privadas del sitio remoto, credenciales, cookies ni tokens.
+- No se modificaron endpoints, esquema de base de datos ni webhook de WhatsApp.
+- Probar /admin?tab=calendar y /admin?tab=jobs con sesión real antes de publicar.

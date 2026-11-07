@@ -55,3 +55,54 @@
 @media (max-width:1120px){ .admin-panel .admin-topbar{align-items:flex-start;flex-direction:column;padding:17px 22px;} .admin-panel .admin-topbar-actions{justify-content:flex-start;} }
 @media (max-width:850px){ .admin-panel .admin-sidebar{position:fixed;top:0;left:0;bottom:0;transform:translateX(-101%);transition:transform .2s ease-out;max-width:88vw;} .admin-panel .admin-sidebar.admin-sidebar-open{transform:translateX(0);} .admin-panel .admin-open-nav,.admin-panel .admin-close-nav{display:inline-flex;align-items:center;justify-content:center;padding:8px;border-radius:7px;color:inherit;} .admin-panel .admin-open-nav{color:#305473;background:#eaf1f8;} .admin-panel .admin-mobile-backdrop{display:block;position:fixed;inset:0;background:rgba(18,35,55,.45);z-index:40;} .admin-panel .admin-main{padding:15px 11px 25px;} .admin-panel .admin-current-user{display:none;} .admin-panel .admin-page-heading h1{font-size:22px;} }
 @media(max-width:480px){ .admin-panel .admin-topbar-actions .admin-action span{display:none;} .admin-panel .admin-topbar-actions .admin-action{padding:9px;} .admin-panel .admin-foot span{display:none;} }
+
+/* Vistas de Calendario y Trabajos ajustadas a capturas del panel del 06-11-2026. */
+.admin-panel .admin-calendar-month { background:#fff;border:1px solid #dde6f0;border-radius:14px;overflow:hidden; }
+.admin-panel .admin-calendar-toolbar { display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;padding:17px 22px;border-bottom:1px solid #e4e9f0; }
+.admin-panel .admin-calendar-month-controls { display:flex;align-items:center;gap:15px; }
+.admin-panel .admin-calendar-month-controls h2 {font-weight:800;font-size:18px;min-width:170px;color:#172f4a;}
+.admin-panel .admin-calendar-month-controls button {color:#244970;border:1px solid #e4eaf2;border-radius:7px;padding:7px;}
+.admin-panel .admin-calendar-month-controls .admin-calendar-today {padding:7px 11px;font-size:12px;font-weight:700;border:1px solid #2a659a;}
+.admin-panel .admin-calendar-legend { display:flex;align-items:center;gap:11px;flex-wrap:wrap;font-size:11px;color:#5c6c82; }
+.admin-panel .admin-calendar-legend span,.admin-panel .admin-calendar-legend button {display:flex;align-items:center;gap:5px;}
+.admin-panel .admin-calendar-legend button {background:#73ad26;color:#fff;padding:8px 12px;border-radius:8px;font-weight:700;}
+.admin-panel .admin-calendar-legend button:disabled {opacity:.6;}
+.admin-panel .dot {display:inline-block;width:9px;height:9px;border-radius:50%;}
+.admin-panel .dot.is-confirmed {background:#73c6ea;}.admin-panel .dot.is-pending {background:#f0b54c;}.admin-panel .dot.is-completed {background:#51c99c;}
+.admin-panel .admin-calendar-grid {display:grid;grid-template-columns:repeat(7,minmax(0,1fr));}
+.admin-panel .admin-calendar-dow {font-size:11px;font-weight:800;text-align:center;padding:12px 4px;color:#68788e;background:#f8fafc;border-bottom:1px solid #dde4ec;}
+.admin-panel .admin-calendar-cell {min-height:135px;padding:9px 6px;border-right:1px solid #e2e8ef;border-bottom:1px solid #e2e8ef;min-width:0;}
+.admin-panel .admin-calendar-cell:nth-child(7n) {border-right:0;}
+.admin-panel .admin-calendar-cell.is-other-month {background:#f7f9fc;opacity:.65;}
+.admin-panel .admin-calendar-cell.is-today .admin-calendar-cell-heading>span:first-child {background:#82b837;color:white;}
+.admin-panel .admin-calendar-cell-heading {display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;padding:0 2px;color:#1f334c;font-size:11px;font-weight:800;}
+.admin-panel .admin-calendar-cell-heading>span:first-child {width:20px;height:20px;display:grid;place-items:center;border-radius:50%;}
+.admin-panel .admin-calendar-count {font-size:10px;color:#8ca0b4;}
+.admin-panel .admin-calendar-event {display:block;max-width:100%;width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left;border-radius:4px;font-size:10px;padding:5px 6px;margin:3px 0;color:#164e71;background:#d8ebff;}
+.admin-panel .admin-calendar-event.is-pending {background:#fff0c6;color:#8b5a0b;}.admin-panel .admin-calendar-event.is-completed {background:#d1f8e9;color:#04765b;}.admin-panel .admin-calendar-event.is-cancelled {background:#ffe0e5;color:#a63750;}
+.admin-panel .admin-calendar-event:hover {filter:brightness(.96);outline:1px solid #458ac4;}
+.admin-panel .admin-calendar-expand {font-size:10px;color:#4b7194;padding:4px 5px;}
+.admin-panel .admin-calendar-error {margin:12px;padding:12px;color:#9c2525;background:#fff1f2;border-radius:8px;font-size:13px;}
+.admin-panel .admin-calendar-note {padding:11px 18px;font-size:11px;color:#73869a;}
+.admin-panel .admin-jobs-view {display:grid;gap:13px;}
+.admin-panel .admin-jobs-filters {display:flex;justify-content:flex-end;align-items:center;gap:12px;flex-wrap:wrap;}
+.admin-panel .admin-jobs-filters input[type=search] {border:1px solid #dce5ee;border-radius:8px;padding:9px 12px;font-size:12px;min-width:220px;background:#fff;}
+.admin-panel .admin-jobs-dates {display:flex;gap:8px;align-items:center;}
+.admin-panel .admin-jobs-dates label {font-size:11px;color:#61758f;}
+.admin-panel .admin-jobs-dates input {border:1px solid #dde7f0;border-radius:6px;margin-left:5px;padding:6px 8px;color:#264b6a;}
+.admin-panel .admin-jobs-reload {display:flex;gap:7px;align-items:center;color:#305d88;background:#fff;padding:8px 12px;border:1px solid #dae5f0;border-radius:8px;font-size:11px;font-weight:700;}
+.admin-panel .admin-jobs-day {border:1px solid #dfe8ef;border-radius:12px;overflow:hidden;background:#fff;}
+.admin-panel .admin-jobs-day h3 {display:flex;align-items:center;gap:7px;text-transform:capitalize;background:#f8fafc;border-bottom:1px solid #e7edf4;padding:12px 15px;font-size:12px;color:#294462;font-weight:800;}
+.admin-panel .admin-jobs-day h3 span {font-weight:400;color:#74859c;}
+.admin-panel .admin-jobs-booking {display:flex;width:100%;align-items:center;gap:14px;padding:12px 15px;text-align:left;border-bottom:1px solid #edf0f4;background:#fff;color:#22364e;}
+.admin-panel .admin-jobs-booking:hover {background:#f0f7fe;}
+.admin-panel .admin-jobs-booking:last-child {border-bottom:0;}
+.admin-panel .admin-jobs-time {width:52px;flex-shrink:0;font-size:12px;font-weight:800;color:#254b70;}
+.admin-panel .admin-jobs-details {flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;}
+.admin-panel .admin-jobs-details strong {font-size:12px;}
+.admin-panel .admin-jobs-details small {font-size:10px;color:#728499;}
+.admin-panel .admin-jobs-details>span {font-size:11px;color:#536a83;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.admin-panel .admin-jobs-status {background:#dff2e8;color:#247451;border-radius:6px;padding:5px 8px;font-size:10px;font-weight:700;flex-shrink:0;}
+.admin-panel .admin-jobs-empty {padding:30px 18px;background:#fff;border:1px solid #e2e8f1;border-radius:9px;color:#687b90;text-align:center;}
+@media(max-width:950px){.admin-panel .admin-calendar-cell{min-height:110px}.admin-panel .admin-calendar-event{font-size:9px}.admin-panel .admin-calendar-toolbar{padding:12px}}
+@media(max-width:650px){.admin-panel .admin-calendar-grid {min-width:660px}.admin-panel .admin-calendar-month {overflow-x:auto}.admin-panel .admin-jobs-filters{justify-content:flex-start}.admin-panel .admin-jobs-filters input[type=search]{flex:1}.admin-panel .admin-jobs-booking{gap:7px;padding:11px 8px}.admin-panel .admin-jobs-status{max-width:78px;white-space:normal}.admin-panel .admin-jobs-time{width:40px}}

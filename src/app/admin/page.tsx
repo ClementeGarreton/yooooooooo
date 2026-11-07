@@ -19,7 +19,8 @@ import ActivityLog from '@/components/admin/ActivityLog'
 import UsersManagement from '@/components/admin/UsersManagement'
 import AiConversations from '@/components/admin/AiConversations'
 import AdminShell from '@/components/admin/AdminShell'
-import AgendaSemanal from '@/components/admin/AgendaSemanal'
+import CalendarioMensual from '@/components/admin/CalendarioMensual'
+import TrabajosPorFecha from '@/components/admin/TrabajosPorFecha'
 import { 
   Calendar, 
   Truck, 
@@ -238,8 +239,9 @@ export default function AdminDashboard() {
 
   // Abre la reserva en una pestaña nueva, ya filtrada en la pestaña Reservas, para tener
   // ahí los botones de acción (editar, marcar pagado, completar, PDF, etc.).
-  const openBookingInNewTab = (booking: Pick<TodayBooking, 'quote_id' | 'client_name'>) => {
+  const openBookingInNewTab = (booking: { quote_id?: string | null; client_name?: string | null }) => {
     const term = booking.quote_id || booking.client_name
+    if (!term) return
     const url = `/admin?tab=bookings&q=${encodeURIComponent(term)}`
     window.open(url, '_blank', 'noopener')
   }
@@ -582,12 +584,12 @@ export default function AdminDashboard() {
         )}
 
         {activeTab === 'calendar' && (
-          <AgendaSemanal bookings={[...todayBookings, ...tomorrowBookings, ...weekBookings]} onOpen={openBookingInNewTab} />
+          <CalendarioMensual onOpen={openBookingInNewTab} />
         )}
 
         {activeTab === 'jobs' && (
           <div className="space-y-5">
-            <AgendaSemanal bookings={[...todayBookings, ...tomorrowBookings, ...weekBookings]} onOpen={openBookingInNewTab} mode="jobs" />
+            <TrabajosPorFecha onOpen={openBookingInNewTab} />
             <div className="flex flex-wrap gap-3 rounded-xl border border-blue-100 bg-white p-4">
               <Button variant="outline" onClick={() => setActiveTab('bookings')}><Calendar className="mr-2 h-4 w-4" />Gestionar reservas</Button>
               <Button variant="outline" onClick={() => setActiveTab('fleet')}><Truck className="mr-2 h-4 w-4" />Administrar flota</Button>
