@@ -18,6 +18,8 @@ import ChangePasswordModal from '@/components/admin/ChangePasswordModal'
 import ActivityLog from '@/components/admin/ActivityLog'
 import UsersManagement from '@/components/admin/UsersManagement'
 import AiConversations from '@/components/admin/AiConversations'
+import AdminShell from '@/components/admin/AdminShell'
+import AgendaSemanal from '@/components/admin/AgendaSemanal'
 import { 
   Calendar, 
   Truck, 
@@ -90,6 +92,7 @@ export default function AdminDashboard() {
   const [tomorrowBookings, setTomorrowBookings] = useState<TodayBooking[]>([])
   const [weekBookings, setWeekBookings] = useState<TodayBooking[]>([])
   const [loading, setLoading] = useState(true)
+  const [dashboardRange, setDashboardRange] = useState<'all' | 'today' | 'tomorrow' | 'week'>('all')
 
   useEffect(() => {
     fetchDashboardData()
@@ -121,6 +124,16 @@ export default function AdminDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Guardar la pestaña elegida en la URL para conservarla al refrescar y compartir enlaces.
+  useEffect(() => {
+    const url = new URL(window.location.href)
+    if (url.searchParams.get('tab') !== activeTab) {
+      url.searchParams.set('tab', activeTab)
+      if (activeTab !== 'bookings') url.searchParams.delete('q')
+      window.history.replaceState(window.history.state, '', url.toString())
+    }
+  }, [activeTab])
+
   const handleLogout = async () => {
     try {
       const response = await fetch('/api/admin/auth/logout', {
@@ -145,12 +158,15 @@ export default function AdminDashboard() {
       
       // Fetch stats
       const statsResponse = await fetch('/api/admin/stats')
+      if (!statsResponse.ok) throw new Error('No se pudieron consultar las estadísticas')
       const statsData = await statsResponse.json()
       setStats(statsData)
 
       // Trae reservas de hoy hasta 6 días adelante y las separa en Hoy / Mañana / Esta semana
       const bookingsResponse = await fetch('/api/admin/today-bookings')
+      if (!bookingsResponse.ok) throw new Error('No se pudieron consultar las reservas')
       const bookingsData: TodayBooking[] = await bookingsResponse.json()
+      if (!Array.isArray(bookingsData)) throw new Error('Formato de reservas inesperado')
 
       const todayStr = format(new Date(), 'yyyy-MM-dd')
       const tomorrowDate = new Date()
@@ -170,7 +186,10 @@ export default function AdminDashboard() {
 
   const tabs = [
     { id: 'dashboard', name: 'Dashboard', icon: BarChart3 },
+    { id: 'calendar', name: 'Calendario', icon: Calendar },
     { id: 'bookings', name: 'Reservas', icon: Calendar },
+    { id: 'jobs', name: 'Trabajos', icon: Truck },
+    { id: 'finance', name: 'Finanzas', icon: DollarSign },
     { id: 'prospects', name: 'Prospectos', icon: UserPlus },
     { id: 'customers', name: 'Clientes', icon: Users },
     { id: 'fleet', name: 'Flota', icon: Truck },
@@ -238,7 +257,7 @@ export default function AdminDashboard() {
       role="button"
       tabIndex={0}
       title="Abrir en Reservas (pestaña nueva) para ver acciones"
-      className="flex items-center justify-between p-4 bg-gray-50 rounded-lg cursor-pointer transition-colors hover:bg-gray-100 hover:ring-1 hover:ring-secondary-300 focus:outline-none focus:ring-2 focus:ring-secondary-400"
+      className="flex items-center justify-between gap-3 p-4 bg-slate-50 border border-slate-100 rounded-lg cursor-pointer transition-colors hover:bg-blue-50 hover:ring-1 hover:ring-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-400"
     >
       <div className="flex items-center gap-4">
         <div className={`p-2 rounded-full ${getStatusColor(booking.status)}`}>
@@ -308,87 +327,32 @@ export default function AdminDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F8F8F8]">
-      {/* Header */}
-      <div className="bg-white shadow-sm border-b">
-        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center py-4">
-            <div>
-              <h1 className="text-2xl font-archivo font-extrabold tracking-tight text-gray-900">Panel de Administración</h1>
-              <p className="text-sm text-gray-500">
-                {currentUser?.displayName
-                  ? `Sesión de ${currentUser.displayName}`
-                  : 'Gestión de mudanzas y reservas'}
-              </p>
-            </div>
-            <div className="flex items-center gap-4">
-              <Button
-                onClick={() => router.push('/')}
-                variant="outline"
-                size="sm"
-              >
-                ← Volver al Cotizador
-              </Button>
-              {currentUser?.canChangePassword && (
-                <Button
-                  onClick={() => setShowChangePassword(true)}
-                  variant="outline"
-                  size="sm"
-                >
-                  <KeyRound className="w-4 h-4 mr-2" />
-                  Contraseña
-                </Button>
-              )}
-              <Button
-                onClick={fetchDashboardData}
-                variant="secondary"
-                size="sm"
-              >
-                🔄 Actualizar
-              </Button>
-              <Button
-                onClick={handleLogout}
-                variant="outline"
-                size="sm"
-                className="text-red-600 hover:text-red-700 border-red-200 hover:border-red-300"
-              >
-                <LogOut className="w-4 h-4 mr-2" />
-                Cerrar Sesión
-              </Button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Navigation Tabs */}
-        <div className="mb-8">
-          <nav className="flex flex-wrap gap-2">
-            {tabs.map((tab) => {
-              const Icon = tab.icon
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`
-                    flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-full transition-colors
-                    ${activeTab === tab.id
-                      ? 'bg-secondary-500 text-white shadow-sm'
-                      : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-                    }
-                  `}
-                >
-                  <Icon className="w-4 h-4" />
-                  {tab.name}
-                </button>
-              )
-            })}
-          </nav>
-        </div>
-
+    <AdminShell
+      activeTab={activeTab}
+      onSelect={setActiveTab}
+      onRefresh={() => window.location.reload()}
+      onLogout={handleLogout}
+      onChangePassword={() => setShowChangePassword(true)}
+      canChangePassword={currentUser?.canChangePassword}
+      displayName={currentUser?.displayName}
+    >
+      <div className="w-full space-y-6">
         {/* Dashboard Tab */}
         {activeTab === 'dashboard' && (
           <div className="space-y-6">
+            <div className="admin-section-toolbar">
+              <div>
+                <h2>Resumen de operación</h2>
+                <p>Indicadores generales y agenda de los próximos siete días</p>
+              </div>
+              <div className="admin-range-tabs" role="group" aria-label="Filtrar período de reservas">
+                {([
+                  ['all', 'Todos'], ['today', 'Hoy'], ['tomorrow', 'Mañana'], ['week', 'Semana']
+                ] as const).map(([key, label]) => (
+                  <button key={key} type="button" onClick={() => setDashboardRange(key)} className={dashboardRange === key ? 'is-active' : ''} aria-pressed={dashboardRange === key}>{label}</button>
+                ))}
+              </div>
+            </div>
             {/* Stats Cards */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <Card className="p-6">
@@ -548,17 +512,17 @@ export default function AdminDashboard() {
             </div>
 
             {/* Reservas de Hoy */}
-            {renderBookingSection(
+            {(dashboardRange === 'all' || dashboardRange === 'today') && renderBookingSection(
               `Reservas de Hoy (${format(new Date(), 'dd/MM/yyyy', { locale: es })})`,
               todayBookings,
               'No hay reservas para hoy'
             )}
 
             {/* Reservas de Mañana */}
-            {renderBookingSection('Reservas de Mañana', tomorrowBookings, 'No hay reservas para mañana')}
+            {(dashboardRange === 'all' || dashboardRange === 'tomorrow') && renderBookingSection('Reservas de Mañana', tomorrowBookings, 'No hay reservas para mañana')}
 
             {/* Resto de la semana, agrupado por día para más claridad */}
-            <Card className="p-6">
+            {(dashboardRange === 'all' || dashboardRange === 'week') && <Card className="p-6">
               <div className="flex items-center justify-between mb-6">
                 <h3 className="text-lg font-semibold text-gray-900">
                   Esta Semana {weekBookings.length > 0 && <span className="text-gray-400 font-normal">({weekBookings.length})</span>}
@@ -585,10 +549,10 @@ export default function AdminDashboard() {
                   ))}
                 </div>
               )}
-            </Card>
+            </Card>}
 
             {/* Gráficos analíticos (mensual) — debajo de lo operativo (hoy/mañana/semana) */}
-            <DashboardCharts />
+            {dashboardRange === 'all' && <DashboardCharts />}
 
             {/* Quick Actions */}
             <Card className="p-6">
@@ -614,6 +578,32 @@ export default function AdminDashboard() {
                 </Button>
               </div>
             </Card>
+          </div>
+        )}
+
+        {activeTab === 'calendar' && (
+          <AgendaSemanal bookings={[...todayBookings, ...tomorrowBookings, ...weekBookings]} onOpen={openBookingInNewTab} />
+        )}
+
+        {activeTab === 'jobs' && (
+          <div className="space-y-5">
+            <AgendaSemanal bookings={[...todayBookings, ...tomorrowBookings, ...weekBookings]} onOpen={openBookingInNewTab} mode="jobs" />
+            <div className="flex flex-wrap gap-3 rounded-xl border border-blue-100 bg-white p-4">
+              <Button variant="outline" onClick={() => setActiveTab('bookings')}><Calendar className="mr-2 h-4 w-4" />Gestionar reservas</Button>
+              <Button variant="outline" onClick={() => setActiveTab('fleet')}><Truck className="mr-2 h-4 w-4" />Administrar flota</Button>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'finance' && (
+          <div className="space-y-5">
+            <div className="admin-section-toolbar"><div><h2>Finanzas</h2><p>Indicadores existentes · no se modificaron fórmulas ni datos</p></div></div>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              <Card className="p-5"><p className="text-sm text-gray-600">Cobrado este mes</p><p className="mt-3 text-2xl font-bold text-green-700">${(stats?.revenue?.paid ?? 0).toLocaleString('es-CL')}</p><p className="mt-2 text-xs text-gray-500">{stats?.revenue?.paidCount ?? 0} reservas pagadas</p></Card>
+              <Card className="p-5"><p className="text-sm text-gray-600">Por cobrar</p><p className="mt-3 text-2xl font-bold text-amber-700">${(stats?.revenue?.pending ?? 0).toLocaleString('es-CL')}</p><p className="mt-2 text-xs text-gray-500">{stats?.revenue?.pendingCount ?? 0} reservas con saldo</p></Card>
+              <Card className="p-5"><p className="text-sm text-gray-600">Cotizaciones pendientes</p><p className="mt-3 text-2xl font-bold text-blue-700">${(stats?.outstandingQuotes?.total ?? 0).toLocaleString('es-CL')}</p><p className="mt-2 text-xs text-gray-500">{stats?.outstandingQuotes?.count ?? 0} cotizaciones sin reserva</p></Card>
+            </div>
+            <DashboardCharts />
           </div>
         )}
 
@@ -672,30 +662,6 @@ export default function AdminDashboard() {
         )}
       </div>
 
-      {/* Footer */}
-      <div className="text-center mt-12 py-6 border-t border-gray-200">
-        <p className="text-xs text-gray-400">
-          ©2025 - Crafted by{' '}
-          <a 
-            href="https://vanlookstudio.com" 
-            target="_blank" 
-            rel="noopener noreferrer"
-            className="text-primary-600 hover:text-primary-700 font-medium transition-colors"
-          >
-            vanlookstudio.com
-          </a>
-          {' '}· parte del sistema por{' '}
-          <a
-            href="https://iaenblanco.com"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-primary-600 hover:text-primary-700 font-medium transition-colors"
-          >
-            IAenBlanco
-          </a>
-        </p>
-      </div>
-
       <ChangePasswordModal
         isOpen={showChangePassword}
         required={Boolean(currentUser?.mustChangePassword)}
@@ -705,6 +671,6 @@ export default function AdminDashboard() {
           fetchCurrentUser()
         }}
       />
-    </div>
+    </AdminShell>
   )
 }
