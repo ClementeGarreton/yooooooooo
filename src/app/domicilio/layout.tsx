@@ -2,7 +2,9 @@ import { Metadata } from 'next'
 
 export const metadata: Metadata = {
   title: 'Cotización a Domicilio',
-  description: 'Servicio de cotización a domicilio en Región Metropolitana. Evaluación profesional en terreno, ideal para mudanzas grandes.',
+  // Sin el monto a propósito: esto es metadata estática, se congela en el build, así que
+  // un precio escrito acá seguiría diciendo lo viejo después de cambiarlo en el panel.
+  description: 'Servicio de cotización a domicilio en Región Metropolitana. Visita personalizada para evaluar tu mudanza, a precio fijo y descontable del flete.',
   keywords: ['cotización a domicilio', 'visita domicilio', 'evaluación mudanza', 'cotización personalizada'],
   alternates: {
     canonical: 'https://yomeencargo.cl/domicilio',

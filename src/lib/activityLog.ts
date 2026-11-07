@@ -42,8 +42,6 @@ export function getActorFromRequest(request: NextRequest): ActivityActor | null 
 }
 
 function getIp(request: NextRequest): string | null {
-  const cf = request.headers.get('cf-connecting-ip')
-  if (cf) return cf.trim()
   const real = request.headers.get('x-real-ip')
   if (real) return real.trim()
   const fwd = request.headers.get('x-forwarded-for')

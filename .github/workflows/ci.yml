@@ -1,0 +1,23 @@
+# CI de la auditoría 2026-11-04: tipos, lint y tests en cada PR y en main.
+# Sin secretos y sin deploys: solo lectura del repo. Las variables de entorno
+# que necesitaría un build real (Supabase, Flow, Emisso) se omiten a propósito.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run lint
+      - run: npm test

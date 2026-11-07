@@ -4,11 +4,6 @@
 
 @layer base {
   :root {
-    /* Familias del sistema: evita descargar Google Fonts durante next build.
-       Conserva los nombres de variables utilizados por Tailwind y el CSS. */
-    --font-archivo: 'Arial Narrow', Arial, Helvetica, sans-serif;
-    --font-hanken: Arial, Helvetica, sans-serif;
-
     --background: 0 0% 100%;
     --foreground: 0 0% 0%;
 
@@ -50,6 +45,24 @@
     /* El verde lima (#8CC63F) es claro: el texto sobre botones verdes debe ser oscuro
        (como en la landing) para tener contraste legible, no blanco. */
     --primary-fg: 14 26 5;
+  }
+
+  /* Panel (admin, /trabajos): el mismo AZUL del panel del cliente como color de acción
+     (#2C5282, con #1B3A5C de la barra lateral como tono oscuro). Igual que el tema del
+     cotizador, solo redefine variables: botones, links, focos y selecciones de todas las
+     pantallas del admin cambian juntos, sin tocar cada componente. */
+  .theme-panel {
+    --primary-50: 238 244 250;
+    --primary-100: 220 232 244;
+    --primary-200: 185 208 232;
+    --primary-300: 143 179 217;
+    --primary-400: 94 143 194;
+    --primary-500: 61 111 168;
+    --primary-600: 44 82 130;
+    --primary-700: 36 72 111;
+    --primary-800: 27 58 92;
+    --primary-900: 20 44 70;
+    --primary-fg: 255 255 255;
   }
 
   body {
@@ -127,3 +140,33 @@
   scrollbar-width: none;
 }
 .scrollbar-hide::-webkit-scrollbar { display: none; }
+
+/* ───────── Tema del panel: forma de tarjetas, botones y campos ─────────
+   Las pantallas del admin usan las primitivas compartidas (Card, Button, Input, Select),
+   marcadas con data-ui. Dentro de .theme-panel toman la forma del panel del cliente:
+   tarjetas de esquinas amplias con borde suave, botones y campos más redondeados.
+   Va después de las utilidades y con :where() para pesar lo mismo que una clase: gana por
+   orden a los estilos base de la primitiva, sin pisar el cotizador ni la landing. */
+:where(.theme-panel) [data-ui='card'] {
+  border-radius: 1rem;
+  /* Lado por lado, y el izquierdo solo si la tarjeta no trae su propio color de borde
+     (las del Inicio lo usan como acento). */
+  border-top-color: rgb(226 232 240);
+  border-right-color: rgb(226 232 240);
+  border-bottom-color: rgb(226 232 240);
+  box-shadow: 0 1px 2px 0 rgb(15 23 42 / 0.05);
+}
+:where(.theme-panel) [data-ui='card']:not([class*='border-l-']) {
+  border-left-color: rgb(226 232 240);
+}
+:where(.theme-panel) [data-ui='button'] {
+  border-radius: 0.75rem;
+  font-weight: 600;
+  box-shadow: none;
+}
+:where(.theme-panel) [data-ui='field'] {
+  border-radius: 0.75rem;
+}
+:where(.theme-panel) [data-ui='field']:not([class*='border-red']) {
+  border-color: rgb(203 213 225);
+}

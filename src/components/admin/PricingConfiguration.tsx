@@ -15,6 +15,8 @@ import {
   XCircle
 } from 'lucide-react'
 import toast from 'react-hot-toast'
+import UfSettingCard from './UfSettingCard'
+import RecommenderRewardCard from './RecommenderRewardCard'
 
 interface PricingConfig {
   basePrice: number
@@ -22,12 +24,20 @@ interface PricingConfig {
   pricePerKilometer: number
   freeKilometers: number
   floorSurcharge: number
-  homeQuotePrice: number
   additionalServices: {
     packing: number
     unpacking: number
     disassembly: number
     assembly: number
+    /** Servicios y recargos agregados en sep-2026. Ver src/lib/extraServices.ts. */
+    fridgeDisassembly: number
+    priority: number
+    overCapacityThresholdM3: number
+    overCapacityPrice: number
+    /** Repaletizar, en el servicio de pallets de empresas. 0 = se cotiza aparte. */
+    repalletize: number
+    /** Precio de la visita a domicilio. Ver src/lib/homeVisitPricing.ts. */
+    homeVisitPrice: number
   }
   specialPackaging: {
     fragile: number
@@ -44,9 +54,19 @@ interface PricingConfig {
     advanceBooking: number
     repeatCustomer: number
   }
+  crew: {
+    includedPeople: number
+    kgPerPerson: number
+    pricePerExtraPerson: number
+    maxPeople: number
+  }
+  stairs: {
+    itemsPerTrip: number
+  }
 }
 
-export default function PricingConfiguration() {
+/** `canEdit` = false: se ven los precios en solo lectura (perfil sin «Cambiar precios»). */
+export default function PricingConfiguration({ canEdit = true }: { canEdit?: boolean }) {
   const [config, setConfig] = useState<PricingConfig | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -155,6 +175,7 @@ export default function PricingConfiguration() {
           <h2 className="text-2xl font-bold text-gray-900">Configuración de Precios</h2>
           <p className="text-gray-600">Gestiona todos los precios del cotizador</p>
         </div>
+        {canEdit ? (
         <div className="flex gap-2">
           <Button onClick={resetToDefaults} variant="outline" size="sm">
             <RefreshCw className="w-4 h-4 mr-2" />
@@ -169,9 +190,16 @@ export default function PricingConfiguration() {
             Guardar Cambios
           </Button>
         </div>
+        ) : (
+          <p className="rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-700">Solo lectura: tu perfil puede ver las tarifas, no cambiarlas.</p>
+        )}
       </div>
 
-      {/* Pricing Sections */}
+      <UfSettingCard canEdit={canEdit} />
+      <RecommenderRewardCard canEdit={canEdit} />
+
+      {/* Pricing Sections. Sin permiso de edición, el fieldset deshabilita todos los campos. */}
+      <fieldset disabled={!canEdit} className="min-w-0">
       <div className="grid lg:grid-cols-2 gap-6">
         {/* Precios Base */}
         <Card className="p-6">
@@ -234,19 +262,99 @@ export default function PricingConfiguration() {
                 onChange={(e) => handleInputChange('floorSurcharge', Number(e.target.value))}
                 placeholder="5000"
               />
+              <p className="mt-1 text-xs text-gray-500">
+                Por piso. Se multiplica por los viajes de escalera (ver abajo).
+              </p>
             </div>
-            <div className="rounded-lg border-2 border-secondary-200 bg-secondary-50 p-4">
-              <label className="block text-sm font-bold text-gray-800 mb-1">
-                Cotización a domicilio (CLP)
+          </div>
+        </Card>
+
+        {/* Cuadrilla y escaleras */}
+        <Card className="p-6">
+          <div className="flex items-center gap-2 mb-2">
+            <Edit3 className="w-5 h-5 text-primary-600" />
+            <h3 className="text-lg font-semibold">Cuadrilla y escaleras</h3>
+          </div>
+          <p className="text-sm text-gray-600 mb-4">
+            Cuánta gente exige la carga y cuánto pesa subir por escalera. La cuadrilla la
+            define el <strong>artículo más pesado</strong>, no la suma: tres bultos de 60 kg
+            se cargan de a uno y necesitan las mismas personas que uno solo.
+          </p>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Personas incluidas en el precio base
               </label>
               <Input
                 type="number"
-                value={config.homeQuotePrice}
-                onChange={(e) => handleInputChange('homeQuotePrice', Number(e.target.value))}
-                placeholder="80000"
+                min="1"
+                value={config.crew?.includedPeople ?? 1}
+                onChange={(e) => handleInputChange('crew.includedPeople', Number(e.target.value))}
+                placeholder="1"
               />
-              <p className="mt-2 text-xs font-semibold text-secondary-800">
-                Servicio premium · ideal para mudanzas grandes. El valor se descuenta si el cliente contrata el traslado.
+              <p className="mt-1 text-xs text-gray-500">
+                Hoy: solo el chofer. Recién se cobra a partir de la siguiente persona.
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Kilos por persona
+              </label>
+              <Input
+                type="number"
+                min="1"
+                value={config.crew?.kgPerPerson ?? 50}
+                onChange={(e) => handleInputChange('crew.kgPerPerson', Number(e.target.value))}
+                placeholder="50"
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Con 50: hasta 50 kg va 1 persona, 51 kg ya son 2, y 200 kg son 4.
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Precio por persona adicional (CLP)
+              </label>
+              <Input
+                type="number"
+                value={config.crew?.pricePerExtraPerson ?? 20000}
+                onChange={(e) =>
+                  handleInputChange('crew.pricePerExtraPerson', Number(e.target.value))
+                }
+                placeholder="20000"
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Mismo precio para la persona obligatoria por peso y para el ayudante que
+                pide el cliente.
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Máximo de personas por servicio
+              </label>
+              <Input
+                type="number"
+                min="1"
+                value={config.crew?.maxPeople ?? 10}
+                onChange={(e) => handleInputChange('crew.maxPeople', Number(e.target.value))}
+                placeholder="10"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Artículos por viaje de escalera
+              </label>
+              <Input
+                type="number"
+                min="1"
+                value={config.stairs?.itemsPerTrip ?? 5}
+                onChange={(e) => handleInputChange('stairs.itemsPerTrip', Number(e.target.value))}
+                placeholder="5"
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Con 5: un 3º piso con 12 artículos cobra 3 viajes ($
+                {((config.floorSurcharge || 0) * 3 * 3).toLocaleString('es-CL')}) en vez de
+                uno solo.
               </p>
             </div>
           </div>
@@ -281,6 +389,114 @@ export default function PricingConfiguration() {
                 placeholder="15000"
               />
             </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Desarmado de Refrigerador (CLP)
+              </label>
+              <Input
+                type="number"
+                value={config.additionalServices.fridgeDisassembly}
+                onChange={(e) => handleInputChange('additionalServices.fridgeDisassembly', Number(e.target.value))}
+                placeholder="45000"
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Solo se le ofrece al cliente si cargó un refrigerador (o un freezer). En 0 no se
+                ofrece nunca.
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Priority — agenda libre (CLP)
+              </label>
+              <Input
+                type="number"
+                value={config.additionalServices.priority}
+                onChange={(e) => handleInputChange('additionalServices.priority', Number(e.target.value))}
+                placeholder="99990"
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Monto fijo: no lo mueve el recargo de sábado, domingo o feriado ni el descuento por
+                flexibilidad. En 0 no se ofrece.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Repaletizar — servicio de pallets (CLP)
+              </label>
+              <Input
+                type="number"
+                value={config.additionalServices.repalletize}
+                onChange={(e) => handleInputChange('additionalServices.repalletize', Number(e.target.value))}
+                placeholder="0"
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Se le muestra a la empresa al pedir «Pallets» en su panel. En 0 se ofrece igual, como
+                «se cotiza aparte».
+              </p>
+            </div>
+
+            <div className="border-t border-gray-200 pt-4">
+              <h4 className="mb-1 text-sm font-semibold text-gray-900">
+                Recargo por exceso de volumen
+              </h4>
+              <p className="mb-3 text-xs text-gray-500">
+                Se cobra solo cuando la mudanza pasa el volumen de un camión: sobre ese punto
+                hay que mandar otro o hacer dos viajes. Es todo o nada, no proporcional.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Se cobra sobre (m³)
+                  </label>
+                  <Input
+                    type="number"
+                    value={config.additionalServices.overCapacityThresholdM3}
+                    onChange={(e) => handleInputChange('additionalServices.overCapacityThresholdM3', Number(e.target.value))}
+                    placeholder="23"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Recargo (CLP)
+                  </label>
+                  <Input
+                    type="number"
+                    value={config.additionalServices.overCapacityPrice}
+                    onChange={(e) => handleInputChange('additionalServices.overCapacityPrice', Number(e.target.value))}
+                    placeholder="29990"
+                  />
+                </div>
+              </div>
+              <p className="mt-1 text-xs text-gray-500">
+                Cualquiera de los dos en 0 apaga el recargo.
+              </p>
+            </div>
+
+            <div className="border-t border-gray-200 pt-4">
+              <h4 className="mb-1 text-sm font-semibold text-gray-900">
+                Visita a domicilio
+              </h4>
+              <p className="mb-3 text-xs text-gray-500">
+                No es un extra de la mudanza: es el precio del servicio de cotización a
+                domicilio, el que se cobra en /domicilio.
+              </p>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Precio de la visita (CLP)
+              </label>
+              <Input
+                type="number"
+                value={config.additionalServices.homeVisitPrice}
+                onChange={(e) => handleInputChange('additionalServices.homeVisitPrice', Number(e.target.value))}
+                placeholder="33000"
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Cambia lo que se cobra y lo que dice la página, la pantalla de bienvenida del
+                cotizador y el comprobante. Acá el 0 no apaga nada: se ignora y se usan
+                $33.000, porque el servicio se cobra siempre.
+              </p>
+            </div>
+
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mt-4">
               <p className="text-xs text-blue-800">
                 <strong>💡 Nota:</strong> Los servicios de &quot;Armado de Cajas&quot; y &quot;Desembalaje&quot; requieren contacto con un ejecutivo para cotización personalizada.
@@ -416,6 +632,7 @@ export default function PricingConfiguration() {
           </div>
         </Card>
       </div>
+      </fieldset>
 
       {/* Confirmation Modal */}
       <Modal

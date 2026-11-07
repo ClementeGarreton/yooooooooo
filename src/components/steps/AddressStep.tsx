@@ -1,13 +1,13 @@
 'use client'
 
 import { useState } from 'react'
-import { useQuoteStore } from '@/store/quoteStore'
+import { useQuoteStore, type Stop } from '@/store/quoteStore'
 import Button from '../ui/Button'
 import Input from '../ui/Input'
 import Select from '../ui/Select'
 import Card from '../ui/Card'
 import AddressAutocomplete from '../ui/AddressAutocomplete'
-import { MapPin, Navigation, Sparkles } from 'lucide-react'
+import { MapPin, Navigation, Sparkles, Plus, Trash2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 interface AddressStepProps {
@@ -131,8 +131,29 @@ const regiones = [
   { value: 'magallanes', label: 'Región de Magallanes y La Antártica Chilena (XII)' },
 ]
 
+/**
+ * Tope de paradas. No es una limitación técnica: por encima de esto deja de ser una
+ * mudanza con paradas y es un reparto, que se cotiza hablando con un ejecutivo.
+ */
+const MAX_PARADAS = 5
+
+const PARADA_VACIA: Stop = {
+  street: '',
+  number: '',
+  commune: '',
+  region: 'metropolitana',
+  additionalInfo: '',
+  note: '',
+}
+
 export default function AddressStep({ onNext, onPrevious }: AddressStepProps) {
-  const { origin, destination, setOriginAddress, setDestinationAddress } = useQuoteStore()
+  const { origin, destination, stops, setOriginAddress, setDestinationAddress, setStops } =
+    useQuoteStore()
+
+  const [paradas, setParadas] = useState<Stop[]>(stops || [])
+
+  const actualizarParada = (i: number, cambios: Partial<Stop>) =>
+    setParadas((prev) => prev.map((p, idx) => (idx === i ? { ...p, ...cambios } : p)))
   
   const [originData, setOriginData] = useState({
     street: origin.address?.street || '',
@@ -163,8 +184,18 @@ export default function AddressStep({ onNext, onPrevious }: AddressStepProps) {
       return
     }
 
+    // Una parada a medio llenar no se puede cotizar: o se completa o se saca.
+    const incompleta = paradas.findIndex((p) => !p.street || !p.number || !p.commune)
+    if (incompleta !== -1) {
+      toast.error(
+        `Completa la parada ${incompleta + 1} (calle, número y comuna) o elimínala`
+      )
+      return
+    }
+
     setOriginAddress(originData)
     setDestinationAddress(destinationData)
+    setStops(paradas)
     toast.success('Direcciones guardadas correctamente')
     onNext()
   }
@@ -351,6 +382,130 @@ export default function AddressStep({ onNext, onPrevious }: AddressStepProps) {
           </div>
         </Card>
       </div>
+
+      {/* PARADAS INTERMEDIAS */}
+      <Card variant="elevated" className="mt-6">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-4">
+          <div className="flex items-center gap-2">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-100">
+              <Navigation className="h-5 w-5 text-amber-600" />
+            </div>
+            <div>
+              <h3 className="text-xl font-bold">Paradas en el camino</h3>
+              <p className="text-sm text-gray-500">
+                Opcional. Lugares por los que el camión pasa entre el origen y el destino.
+              </p>
+            </div>
+          </div>
+          {paradas.length < MAX_PARADAS && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setParadas([...paradas, { ...PARADA_VACIA }])}
+            >
+              <Plus className="mr-2 h-4 w-4" />
+              Agregar parada
+            </Button>
+          )}
+        </div>
+
+        {paradas.length === 0 ? (
+          <p className="pt-4 text-sm text-gray-500">
+            Si tienes que pasar a buscar o a dejar algo en el camino, agrégalo aquí. Cada
+            parada suma kilómetros al viaje, así que el precio se ajusta solo.
+          </p>
+        ) : (
+          <div className="space-y-5 pt-4">
+            {paradas.map((parada, i) => (
+              <div key={i} className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <span className="text-sm font-semibold text-gray-800">Parada {i + 1}</span>
+                  <button
+                    type="button"
+                    onClick={() => setParadas(paradas.filter((_, idx) => idx !== i))}
+                    className="flex items-center gap-1 text-xs font-medium text-red-600 hover:text-red-700"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Eliminar
+                  </button>
+                </div>
+
+                <div className="mb-3">
+                  <AddressAutocomplete
+                    placeholder="Busca la dirección de la parada..."
+                    onSelect={(addressData) => {
+                      actualizarParada(i, {
+                        street: addressData.street,
+                        number: addressData.number,
+                        commune: addressData.commune,
+                        region: addressData.region,
+                      })
+                      toast.success('¡Dirección autocompletada!')
+                    }}
+                  />
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Input
+                    label="Calle"
+                    placeholder="Av. Providencia"
+                    value={parada.street}
+                    onChange={(e) => actualizarParada(i, { street: e.target.value })}
+                    required
+                  />
+                  <Input
+                    label="Número"
+                    placeholder="1234"
+                    value={parada.number}
+                    onChange={(e) => actualizarParada(i, { number: e.target.value })}
+                    required
+                  />
+                  <Select
+                    label="Región"
+                    options={regiones}
+                    value={parada.region}
+                    onChange={(e) => {
+                      const nueva = e.target.value
+                      const comunas = comunasPorRegion[nueva] || []
+                      actualizarParada(i, {
+                        region: nueva,
+                        commune: comunas.includes(parada.commune) ? parada.commune : '',
+                      })
+                    }}
+                    required
+                  />
+                  <Select
+                    label="Comuna"
+                    options={(comunasPorRegion[parada.region] || []).map((c) => ({
+                      value: c,
+                      label: c,
+                    }))}
+                    value={parada.commune}
+                    onChange={(e) => actualizarParada(i, { commune: e.target.value })}
+                    required
+                  />
+                </div>
+
+                <div className="mt-3">
+                  <Input
+                    label="¿Qué hay que hacer acá? (opcional)"
+                    placeholder="Ej: cargar el refrigerador, dejar 3 cajas"
+                    value={parada.note || ''}
+                    onChange={(e) => actualizarParada(i, { note: e.target.value })}
+                  />
+                </div>
+              </div>
+            ))}
+
+            {paradas.length >= MAX_PARADAS && (
+              <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                Llegaste al máximo de {MAX_PARADAS} paradas. Si necesitas más, escríbenos y
+                lo cotizamos a medida.
+              </p>
+            )}
+          </div>
+        )}
+      </Card>
 
       {/* Info */}
       <Card className="mt-6 bg-primary-50 border-primary-200">

@@ -9,7 +9,7 @@ import { Home, Route, Truck, Star, HelpCircle, type LucideIcon } from 'lucide-re
 import { cn } from '@/lib/utils'
 import { trackEvent } from '@/lib/tracking'
 
-const PHONE = '+56 9 5439 0267'
+const PHONE = '+56 9 5233 4799'
 
 const PhoneIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

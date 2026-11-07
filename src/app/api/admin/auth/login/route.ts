@@ -64,6 +64,7 @@ export async function POST(request: NextRequest) {
         username: user.username,
         displayName: user.displayName,
         mustChangePassword: user.mustChangePassword,
+        role: user.role,
       },
     })
 

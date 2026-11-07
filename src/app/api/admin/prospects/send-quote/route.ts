@@ -8,10 +8,9 @@ import {
   computeQuoteAmounts,
   SlotUnavailableError,
 } from '@/lib/quoteCheckout'
-
-const N8N_QUOTE_WEBHOOK_URL =
-  process.env.N8N_QUOTE_WEBHOOK_URL ||
-  'https://core.zensus.cl/webhook/d4594da2-04fb-44b3-baa5-5301e8f49521'
+import { n8nConfirmedSuccess } from '@/lib/n8nClient'
+import { sendSystemEmail } from '@/lib/emailTransport'
+import { quoteStatePhotos } from '@/lib/quoteState'
 
 // Envío de cotización AJUSTADA desde el panel admin:
 //  1) toma el prospecto, aplica el precio ajustado + comentario (si vienen)
@@ -109,6 +108,9 @@ export async function POST(request: NextRequest) {
       propertyDetails,
       estimatedPrice: effectivePrice,
       paymentType: 'mitad',
+      // Las fotos que subió el cliente al cotizar viajan con la reserva.
+      photoUrls: quoteStatePhotos(prospect.quote_state),
+      stops: prospect.stops,
     })
 
     // Si la reserva ya fue pagada (locked), NO se toca total_price: antes esta línea lo
@@ -193,22 +195,19 @@ export async function POST(request: NextRequest) {
       },
     }
 
-    const res = await fetch(N8N_QUOTE_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
+    const result = await sendSystemEmail(payload, { label: 'ajustada' })
+    // No alcanza con el `ok` del HTTP: el webhook responde con `responseMode: responseNode`,
+    // así que cuando un nodo del workflow muere a mitad de camino n8n devuelve igual
+    // HTTP 200 con el cuerpo VACÍO. Solo `{"success": true}` — que lo emite un nodo
+    // posterior al de envío — prueba que el correo salió.
+    const enviado = n8nConfirmedSuccess(result)
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      console.error('[admin/send-quote] n8n respondió error:', res.status, text)
-      return NextResponse.json(
-        { error: 'No se pudo enviar la cotización por correo. Intenta de nuevo.' },
-        { status: 502 }
-      )
-    }
-
-    // Persistir ajuste + agenda + quote_id (para que el webhook convierta por quote_id) + marca de envío
+    // El ajuste se guarda ANTES de saber si el correo salió, y a propósito: para cuando
+    // llegamos acá ya se actualizó el precio de la reserva y ya se crearon las órdenes de
+    // Flow. Si al fallar el correo no persistiéramos el precio y el comentario, el sistema
+    // quedaría a medio camino — reserva con el precio nuevo y prospecto con el viejo — y
+    // además se perdería lo que el administrador acaba de escribir en el modal.
+    // `quote_sent_at` es lo único que NO se toca sin confirmación: es la marca de "se envió".
     await supabaseAdmin
       .from('quote_prospects')
       .update({
@@ -217,10 +216,25 @@ export async function POST(request: NextRequest) {
         scheduled_date: effDate,
         scheduled_time: effTime,
         quote_id: quoteId,
-        quote_sent_at: new Date().toISOString(),
+        ...(enviado ? { quote_sent_at: new Date().toISOString() } : {}),
         updated_at: new Date().toISOString(),
       })
       .eq('id', prospect.id)
+
+    // Enviada: deja de ser borrador (add_quote_draft.sql) y entra en la secuencia de correos.
+    // Aparte y sin revisar el error: sin la migración la columna no existe y no importa.
+    if (enviado) await supabaseAdmin.from('quote_prospects').update({ is_draft: false }).eq('id', prospect.id)
+
+    if (!enviado) {
+      // El motivo concreto ya quedó logueado en n8nClient (timeout/red/HTTP/sin confirmación).
+      return NextResponse.json(
+        {
+          error:
+            'Se guardó el ajuste, pero el correo NO salió. Revisá el workflow de n8n y volvé a enviar.',
+        },
+        { status: 502 }
+      )
+    }
 
     await logAdminAction({
       actor: getActorFromRequest(request),

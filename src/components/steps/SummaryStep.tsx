@@ -16,14 +16,24 @@ import {
   Clock,
   ShieldCheck,
 } from 'lucide-react'
-import { formatCurrency, formatDate, formatTime, formatDistanceKm } from '@/lib/utils'
+import { formatCurrency, formatDate, formatTime, formatDistanceKm, isPastMoveDate } from '@/lib/utils'
 import { generateQuotePDF } from '@/lib/pdfGenerator'
+import { buildQuoteProspectBody } from '@/lib/quoteProspectPayload'
+import { buildQuoteState } from '@/lib/quoteState'
 import { getPricingConfig } from '@/lib/pricingService'
 import { trackEvent, pushDataLayerMonto } from '@/lib/tracking'
 import { attributionForSubmit } from '@/lib/attribution'
 import toast from 'react-hot-toast'
-import WhatsAppHandoff from '../ui/WhatsAppHandoff'
 import { format } from 'date-fns'
+import { formatStopAddress } from '@/lib/stops'
+import type { CouponQuote } from '@/lib/couponTypes'
+import { depositAmount } from '@/lib/revenueBreakdown'
+import {
+  DEFAULT_EXTRA_SERVICES,
+  hasFridge,
+  overCapacitySurcharge,
+  trucksNeeded,
+} from '@/lib/extraServices'
 
 // Configuración de precios por defecto para evitar errores
 const DEFAULT_PRICING = {
@@ -31,7 +41,11 @@ const DEFAULT_PRICING = {
     disassembly: 15000,
     assembly: 15000,
     packing: 0, // No se muestra precio, requiere contacto con ejecutivo
-    unpacking: 0 // No se muestra precio, requiere contacto con ejecutivo
+    unpacking: 0, // No se muestra precio, requiere contacto con ejecutivo
+    fridgeDisassembly: DEFAULT_EXTRA_SERVICES.fridgeDisassembly,
+    priority: DEFAULT_EXTRA_SERVICES.priority,
+    overCapacityThresholdM3: DEFAULT_EXTRA_SERVICES.overCapacityThresholdM3,
+    overCapacityPrice: DEFAULT_EXTRA_SERVICES.overCapacityPrice
   }
 }
 
@@ -50,11 +64,14 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
     destination,
     items,
     additionalServices,
+    stops,
     totalVolume,
     totalWeight,
     totalDistance,
     estimatedPrice,
     recommendedVehicle,
+    requiredCrew,
+    totalCrew,
     isConfirmed,
     calculateTotals,
     setConfirmed,
@@ -76,7 +93,11 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
             disassembly: pricing.additionalServices.disassembly,
             assembly: pricing.additionalServices.assembly,
             packing: 0, // No se muestra precio, requiere contacto con ejecutivo
-            unpacking: 0 // No se muestra precio, requiere contacto con ejecutivo
+            unpacking: 0, // No se muestra precio, requiere contacto con ejecutivo
+            fridgeDisassembly: pricing.additionalServices.fridgeDisassembly,
+            priority: pricing.additionalServices.priority,
+            overCapacityThresholdM3: pricing.additionalServices.overCapacityThresholdM3,
+            overCapacityPrice: pricing.additionalServices.overCapacityPrice
           }
         })
       } catch (error) {
@@ -89,11 +110,41 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
 
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isSendingQuote, setIsSendingQuote] = useState(false)
-  const [acceptedTerms, setAcceptedTerms] = useState(false)
+  // UNA casilla para todo: Términos y Condiciones, Políticas de Garantía y Política de
+  // Privacidad. Es obligatoria para pagar (50% o 100%) y para pedir la cotización por
+  // correo. Antes había dos casillas —una para pagar y otra para el correo— y el cliente
+  // aceptaba lo mismo dos veces (lo notó Francisco el 01-10-2026). Si intenta seguir sin
+  // marcarla, se resalta y se le lleva a ella.
+  const [acceptedPolicies, setAcceptedPolicies] = useState(false)
+  const [policiesError, setPoliciesError] = useState(false)
+  const policiesRef = useRef<HTMLLabelElement>(null)
   const prospectSavedRef = useRef(false)
-
+  // Cupón o código de referido (campaña OCTUBRE: «reservando en nuestra web»). El servidor
+  // lo vuelve a validar al pagar; acá solo se muestra el descuento.
+  // El código del link de un recomendador queda cargado (ver cotizador/page.tsx).
+  const [couponInput, setCouponInput] = useState(() => {
+    try {
+      return typeof window === 'undefined' ? '' : localStorage.getItem('yme_codigo') || ''
+    } catch {
+      return ''
+    }
+  })
+  const autoAppliedRef = useRef(false)
+  const [coupon, setCoupon] = useState<CouponQuote | null>(null)
+  const [couponBusy, setCouponBusy] = useState(false)
+  const [couponError, setCouponError] = useState('')
+  // Si cambia el precio (volvió atrás y cambió algo), el descuento calculado ya no vale.
   useEffect(() => {
-    calculateTotals()
+    setCoupon(null)
+  }, [estimatedPrice])
+  const payPrice = coupon ? coupon.finalPrice : estimatedPrice
+
+  // El cálculo es asíncrono: el auto-guardado lo espera antes de guardar y armar el PDF.
+  const totalsReadyRef = useRef<Promise<void>>(Promise.resolve())
+  useEffect(() => {
+    totalsReadyRef.current = calculateTotals().catch((error) => {
+      console.error('[SummaryStep] Error al calcular los totales:', error)
+    })
   }, [calculateTotals])
 
   // CRO: vista del checkout (una sola vez)
@@ -140,6 +191,8 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
       origin: buildAddress(origin),
       destination: buildAddress(destination),
     },
+    // Paradas intermedias: sin ellas la reserva quedaba solo con origen y destino.
+    stops,
     // Piso, ascensor y distancia estacionamiento->puerta de origen/destino: se capturan
     // en el cotizador pero antes se perdían al guardar — nunca llegaban a la reserva ni a
     // la Orden de Trabajo que reciben los trabajadores.
@@ -160,6 +213,8 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
         : null,
     },
     estimatedPrice,
+    // Lo que el cliente declaró: con esto el servidor recalcula el precio antes de cobrar.
+    pricingInput: buildQuoteState({ dateTime, isFlexible, origin, destination, stops, items, additionalServices }),
     photoUrls: additionalServices?.photos || [],
     // gclid/UTMs capturados de la URL: para el pago en pagina y el envio por correo.
     attribution: attributionForSubmit(),
@@ -167,54 +222,28 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
 
   const saveProspect = async (source: string): Promise<string | null> => {
     try {
-      const originFull = buildAddress(origin)
-      const destinationFull = buildAddress(destination)
-
-      const itemsSummary = items.map(item => ({
-        name: item.name,
-        quantity: item.quantity,
-        volume: parseFloat((item.volume * item.quantity).toFixed(2)),
-        packaging: item.packaging && item.packaging.type !== 'none' ? item.packaging : undefined,
-      }))
-
+      // El cuerpo lo arma `buildQuoteProspectBody`, compartido con el cotizador interno
+      // del panel: la cotización se guarda igual venga de donde venga.
       const res = await fetch('/api/prospects/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          source,
-          quote_id: getQuoteId(),
-          name: personalInfo?.name,
-          email: personalInfo?.email,
-          phone: personalInfo?.phone,
-          is_company: personalInfo?.isCompany || false,
-          company_name: personalInfo?.companyName,
-          company_rut: personalInfo?.companyRut,
-          origin_address: originFull,
-          destination_address: destinationFull,
-          origin_floor: origin.details?.floor ?? null,
-          origin_has_elevator: origin.details?.hasElevator ?? null,
-          origin_parking_distance: origin.details?.parkingDistance ?? null,
-          destination_floor: destination.details?.floor ?? null,
-          destination_has_elevator: destination.details?.hasElevator ?? null,
-          destination_parking_distance: destination.details?.parkingDistance ?? null,
-          scheduled_date: dateTime ? format(new Date(dateTime), 'yyyy-MM-dd') : null,
-          scheduled_time: dateTime ? format(new Date(dateTime), 'HH:mm') : null,
-          total_price: estimatedPrice,
-          original_price: isFlexible ? Math.round(estimatedPrice / 0.9) : estimatedPrice,
-          is_flexible: isFlexible,
-          recommended_vehicle: recommendedVehicle,
-          total_volume: totalVolume,
-          total_weight: totalWeight,
-          total_distance: totalDistance,
-          items_summary: itemsSummary,
-          additional_services: {
-            disassembly: additionalServices.disassembly,
-            assembly: additionalServices.assembly,
-            packing: additionalServices.packing,
-            unpacking: additionalServices.unpacking,
-            observations: additionalServices.observations,
-          },
-          // gclid/UTMs capturados de la URL (Google Ads).
+          // Del store, no del render: el PDF se arma con esos mismos valores. Con los del render,
+          // la cotización quedaba con el precio de antes de recalcular (sin el ayudante adicional,
+          // COT-001699: $46.920 en la ficha y $71.920 en el PDF) y eso es lo que decía el correo.
+          ...buildQuoteProspectBody(
+            useQuoteStore.getState(),
+            {
+            source,
+            quoteId: getQuoteId(),
+            overCapacity: {
+              overCapacityThresholdM3: pricingConfig.services.overCapacityThresholdM3,
+              overCapacityPrice: pricingConfig.services.overCapacityPrice,
+            },
+            }
+          ),
+          // gclid/UTMs capturados de la URL (Google Ads). Solo en la web: en el panel la
+          // cookie sería de la secretaria.
           attribution: attributionForSubmit(),
         }),
       })
@@ -262,8 +291,14 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
   // Envío REAL de la cotización por correo: genera el link de pago (abono 50%)
   // y dispara el webhook de n8n con el PDF + link. El cliente paga desde el correo.
   const handleSendQuote = async () => {
-    if (!acceptedTerms) {
-      toast.error('Debes aceptar los Términos y Condiciones y la Política de Privacidad.')
+    if (fechaPasada) {
+      toast.error('La fecha de tu mudanza ya pasó. Vuelve a «Fecha y Hora» y elige otra.')
+      return
+    }
+    if (!acceptedPolicies) {
+      setPoliciesError(true)
+      toast.error('Debes aceptar los Términos y Condiciones, las Políticas de Garantía y la Política de Privacidad.')
+      policiesRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       return
     }
     setIsSendingQuote(true)
@@ -295,6 +330,8 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
           quoteId: getQuoteId(),
           prospectId: prospectId || prospectIdRef.current,
           pdfUrl: pdfUrlRef.current,
+          // Esta casilla incluye las Políticas de Garantía: queda guardada en la reserva.
+          policiesAccepted: acceptedPolicies,
           details: {
             distanceKm: totalDistance,
             volumeM3: totalVolume,
@@ -344,8 +381,13 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
     return parts.join(', ')
   }
 
+  // Fecha guardada en el navegador que ya pasó (se saltó el paso «Fecha y Hora»): no se
+  // guarda, no se envía ni se paga hasta elegir otra.
+  const fechaPasada = isPastMoveDate(dateTime)
+
   const summaryDataReadyForPdf =
     Boolean(
+      !fechaPasada &&
       personalInfo?.name?.trim() &&
         personalInfo?.email?.trim() &&
         personalInfo?.phone?.trim() &&
@@ -366,6 +408,8 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
     const run = async () => {
       let success = false
       try {
+        await totalsReadyRef.current
+        if (cancelled) return
         if (!prospectSavedRef.current) {
           const id = await saveProspect('web')
           if (cancelled || !id) return
@@ -393,17 +437,68 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
   // Baseline = abono (la opción destacada). Los botones Pagar / Descargar Cotización
   // ajustan el monto al TOTAL en su onPointerDown, justo antes del clic.
   useEffect(() => {
-    if (estimatedPrice > 0) pushDataLayerMonto(Math.round(estimatedPrice * 0.5))
-  }, [estimatedPrice])
+    if (payPrice > 0) pushDataLayerMonto(depositAmount(payPrice))
+  }, [payPrice])
+
+  const applyCoupon = async () => {
+    const code = couponInput.trim()
+    if (!code || couponBusy) return
+    if (!personalInfo?.email) {
+      setCouponError('Escribe tu correo en tus datos antes de aplicar un código.')
+      return
+    }
+    setCouponBusy(true)
+    setCouponError('')
+    try {
+      const res = await fetch('/api/quote/coupon', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, quoteId: getQuoteId(), email: personalInfo.email, price: estimatedPrice }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data?.coupon) throw new Error(data?.error || 'No pudimos revisar el código.')
+      setCoupon(data.coupon)
+      trackEvent('coupon_applied', { coupon: data.coupon.code, value: data.coupon.discount, currency: 'CLP' })
+    } catch (error) {
+      setCoupon(null)
+      setCouponError(error instanceof Error ? error.message : 'No pudimos revisar el código.')
+    } finally {
+      setCouponBusy(false)
+    }
+  }
+
+  // Código que llegó por el link de un recomendador: se aplica solo, una vez, cuando ya hay
+  // precio y correo. Si no corresponde (por ejemplo, ya es cliente), se ve el motivo.
+  useEffect(() => {
+    if (autoAppliedRef.current || coupon || !couponInput || !(estimatedPrice > 0) || !personalInfo?.email) return
+    let fromLink = ''
+    try {
+      fromLink = localStorage.getItem('yme_codigo') || ''
+    } catch {}
+    if (!fromLink || fromLink !== couponInput) return
+    autoAppliedRef.current = true
+    applyCoupon()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [estimatedPrice, personalInfo?.email, couponInput, coupon])
 
   // Pago EN LA PÁGINA. Reutiliza el mismo quoteId (un solo booking) y delega en
   // /api/quote/checkout, que crea/reutiliza la pre-reserva y genera la orden Flow.
   const handleConfirmReservation = async (paymentType: 'completo' | 'mitad') => {
+    if (fechaPasada) {
+      toast.error('La fecha de tu mudanza ya pasó. Vuelve a «Fecha y Hora» y elige otra.')
+      return
+    }
+    if (!acceptedPolicies) {
+      setPoliciesError(true)
+      toast.error('Para reservar debes aceptar los Términos y Condiciones, las Políticas de Garantía y la Política de Privacidad.')
+      policiesRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      return
+    }
     setIsSubmitting(true)
     trackEvent(paymentType === 'completo' ? 'click_pagar_100' : 'click_abonar_50', {
       value: paymentType === 'completo'
-        ? Math.round(estimatedPrice * 0.95)
-        : Math.round(estimatedPrice * 0.5),
+        ? Math.round(payPrice * 0.95)
+        : depositAmount(payPrice),
       currency: 'CLP',
     })
 
@@ -415,8 +510,8 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
 
       const quoteId = getQuoteId()
       const finalPrice = paymentType === 'completo'
-        ? Math.round(estimatedPrice * 0.95) // 100% con 5% de descuento
-        : Math.round(estimatedPrice * 0.5)  // abono 50%
+        ? Math.round(payPrice * 0.95) // 100% con 5% de descuento
+        : depositAmount(payPrice) // abono: 50%, mínimo $30.000
 
       const response = await fetch('/api/quote/checkout', {
         method: 'POST',
@@ -424,7 +519,10 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
         body: JSON.stringify({
           quoteId,
           paymentType,
+          policiesAccepted: acceptedPolicies,
           ...buildQuotePayload(),
+          // El precio de lista va en el payload; el servidor descuenta el cupón.
+          ...(coupon ? { couponCode: coupon.code } : {}),
         }),
       })
 
@@ -472,26 +570,11 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
             <h3 className="font-semibold mb-3">📧 ¿Qué sigue?</h3>
             <ul className="space-y-2 text-sm text-gray-700">
               <li>✅ Recibirás un correo con la cotización detallada</li>
-              <li>✅ Afina los detalles con nuestro ejecutivo por WhatsApp</li>
+              <li>✅ Te contactaremos vía WhatsApp para confirmar detalles</li>
               <li>✅ Un ejecutivo te llamará en las próximas 24 horas</li>
               <li>✅ Podrás realizar el pago y confirmar tu reserva</li>
             </ul>
           </div>
-
-          <WhatsAppHandoff
-            message={[
-              'Hola, mi reserva/cotización quedó confirmada en Yo Me Encargo y quiero afinar los detalles con un EJECUTIVO y continuar la coordinación.',
-              `Cotización: ${getQuoteId()}`,
-              personalInfo?.name ? `Nombre: ${personalInfo.name}` : '',
-              `Valor estimado: ${formatCurrency(estimatedPrice)}`,
-            ].filter(Boolean).join('\n')}
-            label="AFINAR DETALLES CON NUESTRO EJECUTIVO"
-            location="quote_confirmed_handoff"
-            headline="AFINA LOS DETALLES DE TU MUDANZA CON NUESTRO EJECUTIVO"
-            helper="Así tendremos tu cotización agendada en el chat desde hoy y podremos acompañarte para evitar olvidos, cambios de último minuto y problemas de coordinación el día del traslado."
-            strong
-            className="mb-4"
-          />
 
           <div className="space-y-3">
             <Button onClick={handleSendQuote} isLoading={isSendingQuote} variant="secondary" className="w-full" size="lg">
@@ -507,19 +590,11 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
     )
   }
 
-  const abono50 = Math.round(estimatedPrice * 0.5)
-  const pago100 = Math.round(estimatedPrice * 0.95)
-  const descuento100 = Math.round(estimatedPrice * 0.05)
-
-  const whatsappQuoteMessage = [
-    'Hola, acabo de cotizar una mudanza en Yo Me Encargo y quiero afinar los detalles con un EJECUTIVO y continuar la coordinación.',
-    `Cotización: ${getQuoteId()}`,
-    personalInfo?.name ? `Nombre: ${personalInfo.name}` : '',
-    origin.address?.commune ? `Origen: ${origin.address.commune}` : '',
-    destination.address?.commune ? `Destino: ${destination.address.commune}` : '',
-    dateTime ? `Fecha estimada: ${formatDate(new Date(dateTime))}` : '',
-    `Valor estimado: ${formatCurrency(estimatedPrice)}`,
-  ].filter(Boolean).join('\n')
+  // Abono: la mitad, con un mínimo de $30.000 aunque pase del 50% (servicios chicos).
+  const abono50 = depositAmount(payPrice)
+  const isHalf = abono50 === Math.round(payPrice * 0.5)
+  const pago100 = Math.round(payPrice * 0.95)
+  const descuento100 = Math.round(payPrice * 0.05)
 
   // Bloque de precio reutilizado (desglose flexible + facturación empresa)
   const PriceBlock = (
@@ -554,9 +629,60 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
           <span className="text-3xl font-extrabold text-gray-900">{formatCurrency(estimatedPrice)}</span>
         </div>
       )}
+      {coupon && (
+        <div className="mt-3 space-y-1 border-t border-gray-200 pt-3">
+          <div className="flex justify-between items-center text-sm font-semibold text-green-700">
+            <span>Código {coupon.code}:</span>
+            <span>−{formatCurrency(coupon.discount)}</span>
+          </div>
+          <div className="flex justify-between items-end">
+            <span className="text-sm text-gray-600">Total con descuento:</span>
+            <span className="text-3xl font-extrabold text-gray-900">{formatCurrency(coupon.finalPrice)}</span>
+          </div>
+        </div>
+      )}
       {personalInfo?.isCompany && (
         <p className="text-xs text-gray-500 mt-1 text-right">IVA incluido</p>
       )}
+      <div className="mt-4 border-t border-gray-200 pt-3">
+        {coupon ? (
+          <button
+            type="button"
+            onClick={() => {
+              setCoupon(null)
+              setCouponInput('')
+            }}
+            className="text-xs font-medium text-gray-500 underline"
+          >
+            Quitar código
+          </button>
+        ) : (
+          <>
+            <label htmlFor="coupon-code" className="block text-xs font-semibold text-gray-700 mb-1">
+              ¿Tienes un código de descuento?
+            </label>
+            <div className="flex gap-2">
+              <input
+                id="coupon-code"
+                value={couponInput}
+                onChange={(e) => {
+                  setCouponInput(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 20))
+                  setCouponError('')
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') applyCoupon()
+                }}
+                placeholder="Ej. OCTUBRE"
+                className="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm uppercase"
+              />
+              <Button type="button" variant="outline" size="sm" onClick={applyCoupon} isLoading={couponBusy} disabled={!couponInput.trim()}>
+                Aplicar
+              </Button>
+            </div>
+            {couponError && <p className="mt-1 text-xs text-red-600">{couponError}</p>}
+          </>
+        )}
+      </div>
       <p className="text-[11px] text-gray-400 mt-3 text-center">
         Precio final estimado según los datos ingresados.
       </p>
@@ -596,21 +722,74 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
             {/* 1. Precio */}
             {PriceBlock}
 
+            {/* Aceptación única: obligatoria para pagar y para recibir la cotización por correo */}
+            <label
+              ref={policiesRef}
+              className={`flex items-start gap-2.5 cursor-pointer select-none rounded-xl border bg-white px-4 py-3 ${
+                policiesError && !acceptedPolicies ? 'border-red-400 ring-2 ring-red-200' : 'border-gray-200'
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={acceptedPolicies}
+                onChange={(e) => {
+                  setAcceptedPolicies(e.target.checked)
+                  if (e.target.checked) setPoliciesError(false)
+                }}
+                className="mt-0.5 h-4 w-4 flex-shrink-0 rounded border-gray-300 text-primary-600 focus:ring-primary-500 cursor-pointer"
+              />
+              <span className="text-sm text-gray-700 leading-relaxed">
+                Acepto los{' '}
+                <a
+                  href="/terminos-y-condiciones"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-semibold text-primary-600 underline hover:text-primary-700"
+                >
+                  Términos y Condiciones
+                </a>
+                , las{' '}
+                <a
+                  href="/politicas-de-garantia"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-semibold text-primary-600 underline hover:text-primary-700"
+                >
+                  Políticas de Garantía
+                </a>{' '}
+                y la{' '}
+                <a
+                  href="/politica-de-privacidad"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-semibold text-primary-600 underline hover:text-primary-700"
+                >
+                  Política de Privacidad
+                </a>{' '}
+                de Yo me Encargo.
+              </span>
+            </label>
+            {policiesError && !acceptedPolicies && (
+              <p className="-mt-2 px-1 text-xs font-medium text-red-600">
+                Marca la casilla para reservar o recibir la cotización por correo.
+              </p>
+            )}
+
             {/* 2. Abonar 50% — CTA dominante */}
             <Card variant="elevated" className="rounded-2xl border-2 border-[#8CC63F] bg-[#F2FBE9] shadow-lg">
               <div className="text-center">
                 <span className="inline-block bg-[#8CC63F] text-[#0E1A05] text-[11px] font-bold uppercase tracking-wide px-3 py-1 rounded-full mb-3">
                   ⭐ Opción más elegida
                 </span>
-                <h3 className="text-xl font-bold text-gray-900">Reserva con el 50%</h3>
+                <h3 className="text-xl font-bold text-gray-900">{isHalf ? 'Reserva con el 50%' : 'Reserva con un abono'}</h3>
                 <p className="text-sm text-gray-600 mt-1 mb-4">
-                  Asegura tu fecha abonando solo la mitad ahora. El resto lo pagas al finalizar el traslado.
+                  {isHalf ? 'Asegura tu fecha abonando solo la mitad ahora.' : 'Asegura tu fecha con el abono mínimo.'} El resto lo pagas al finalizar el traslado.
                 </p>
                 <p className="text-4xl font-extrabold text-[#3F6212] leading-none">
                   {formatCurrency(abono50)}
                 </p>
                 <p className="text-xs text-gray-500 mt-1 mb-4">
-                  + {formatCurrency(abono50)} al finalizar el traslado
+                  + {formatCurrency(payPrice - abono50)} al finalizar el traslado
                 </p>
                 <Button
                   onPointerDown={() => pushDataLayerMonto(abono50)}
@@ -620,7 +799,7 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
                   className="w-full bg-[#8CC63F] hover:bg-[#6FA52E] text-[#0E1A05] font-bold shadow-md"
                 >
                   <CheckCircle className="w-5 h-5 mr-2" />
-                  Abonar 50% y asegurar mi cupo
+                  {isHalf ? 'Abonar 50% y asegurar mi cupo' : 'Abonar y asegurar mi cupo'}
                 </Button>
                 <p className="text-xs text-gray-500 mt-2">Confirmación inmediata por correo.</p>
                 <p className="text-xs text-gray-700 mt-3 bg-white/70 border border-[#cfe6a8] rounded-lg px-3 py-2">
@@ -629,72 +808,8 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
               </div>
             </Card>
 
-            <WhatsAppHandoff
-              message={whatsappQuoteMessage}
-              label="AFINAR DETALLES CON NUESTRO EJECUTIVO"
-              location="quote_summary_handoff"
-              headline="TU COTIZACIÓN YA ESTÁ LISTA: AFINA LOS DETALLES CON NUESTRO EJECUTIVO"
-              helper="Así podremos identificar tu cotización en el chat y continuar contigo sin que tengas que explicar todo de nuevo, evitando descoordinaciones antes del día de la mudanza."
-              strong
-              size="compact"
-            />
-
-            {/* 3. Enviar cotización por correo (visible sin bajar tanto) */}
-            <Card className="rounded-2xl border border-blue-200 bg-gradient-to-br from-blue-50 to-white"> 
-              <p className="text-sm font-semibold text-gray-800 text-center mb-1">
-                ¿Prefieres decidir con calma?
-              </p>
-              <p className="text-xs text-gray-500 text-center mb-3">
-                Te enviamos la cotización detallada y el enlace de pago para revisarlo cuando quieras.
-              </p>
-
-              {/* Aceptación de términos antes de enviar */}
-              <label className="flex items-start gap-2.5 mb-3 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={acceptedTerms}
-                  onChange={(e) => setAcceptedTerms(e.target.checked)}
-                  className="mt-0.5 h-4 w-4 flex-shrink-0 rounded border-gray-300 text-primary-600 focus:ring-primary-500 cursor-pointer"
-                />
-                <span className="text-xs text-gray-600 leading-relaxed">
-                  Acepto los{' '}
-                  <a
-                    href="/terminos-y-condiciones"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="font-semibold text-primary-600 underline hover:text-primary-700"
-                  >
-                    Términos y Condiciones
-                  </a>{' '}
-                  y la{' '}
-                  <a
-                    href="/politica-de-privacidad"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="font-semibold text-primary-600 underline hover:text-primary-700"
-                  >
-                    Política de Privacidad
-                  </a>
-                  .
-                </span>
-              </label>
-
-              <Button
-                onPointerDown={() => pushDataLayerMonto(estimatedPrice)}
-                onClick={handleSendQuote}
-                isLoading={isSendingQuote}
-                disabled={!acceptedTerms}
-                variant="outline"
-                className="w-full border-2 border-blue-500 text-blue-700 hover:bg-blue-50"
-                size="lg"
-              >
-                <Send className="w-5 h-5 mr-2" />
-                Enviarme la cotización por correo
-              </Button>
-            </Card>
-
-            {/* 4. Pagar 100% — opción secundaria */}
-            <Card className="rounded-2xl border border-gray-200"> 
+            {/* 3. Pagar 100% — opción secundaria */}
+            <Card className="rounded-2xl border border-gray-200">
               <div className="text-center">
                 <p className="text-sm font-semibold text-gray-700">¿Prefieres pagar todo ahora?</p>
                 <p className="text-xs text-green-700 font-medium mt-0.5 mb-2">
@@ -716,11 +831,33 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
               </div>
             </Card>
 
-            {/* 5. Mensaje de cuotas */}
+            {/* 4. Mensaje de cuotas */}
             <div className="flex items-start gap-2 text-xs text-gray-600 px-1">
               <CreditCard className="w-4 h-4 text-gray-400 mt-0.5 shrink-0" />
               <span>Puedes pagar con débito, crédito o en cuotas según tu medio de pago.</span>
             </div>
+
+            {/* 5. Enviar cotización por correo (para indecisos) */}
+            <Card className="rounded-2xl border border-blue-200 bg-gradient-to-br from-blue-50 to-white">
+              <p className="text-sm font-semibold text-gray-800 text-center mb-1">
+                ¿Prefieres decidir con calma?
+              </p>
+              <p className="text-xs text-gray-500 text-center mb-3">
+                Te enviamos la cotización detallada y el enlace de pago para revisarlo cuando quieras.
+              </p>
+
+              <Button
+                onPointerDown={() => pushDataLayerMonto(estimatedPrice)}
+                onClick={handleSendQuote}
+                isLoading={isSendingQuote}
+                variant="outline"
+                className="w-full border-2 border-blue-500 text-blue-700 hover:bg-blue-50"
+                size="lg"
+              >
+                <Send className="w-5 h-5 mr-2" />
+                Enviarme la cotización por correo
+              </Button>
+            </Card>
 
             {/* 6. Garantía / confianza */}
             <Card className="rounded-2xl border border-gray-200">
@@ -733,13 +870,29 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
                   'Comprobante de reserva inmediato',
                   'Precio fijo sin sorpresas',
                   'Carga protegida durante el traslado',
-                  'Devolución disponible sujeta a políticas de garantía',
                 ].map((g) => (
                   <li key={g} className="flex gap-2">
                     <CheckCircle className="w-4 h-4 text-green-600 mt-0.5 shrink-0" />
                     <span>{g}</span>
                   </li>
                 ))}
+                {/* Antes decía «sujeta a políticas de garantía» sin que esas políticas
+                    existieran en el sitio: ahora lleva a ellas, en otra pestaña para no
+                    perder la cotización. */}
+                <li className="flex gap-2">
+                  <CheckCircle className="w-4 h-4 text-green-600 mt-0.5 shrink-0" />
+                  <span>
+                    Devolución disponible según nuestras{' '}
+                    <a
+                      href="/politicas-de-garantia"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-medium text-primary-600 underline hover:text-primary-700"
+                    >
+                      políticas de garantía
+                    </a>
+                  </span>
+                </li>
               </ul>
             </Card>
 
@@ -818,6 +971,11 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
             <p className="text-gray-700">
               🕐 {dateTime && formatTime(new Date(dateTime))}
             </p>
+            {fechaPasada && (
+              <p className="mt-2 text-sm font-semibold text-red-600">
+                Esta fecha ya pasó. Vuelve al paso «Fecha y Hora» y elige otra.
+              </p>
+            )}
             {isFlexible && (
               <p className="text-green-600 mt-2 text-sm font-semibold">
                 ✅ Con descuento por flexibilidad (-10%)
@@ -843,6 +1001,25 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
                   {origin.details?.hasElevator ? ' (con ascensor)' : ' (sin ascensor)'}
                 </p>
               </div>
+              {(stops || []).length > 0 && (
+                <div className="md:col-span-2">
+                  <span className="mb-1 block text-sm text-gray-500">
+                    🟡 Paradas en el camino:
+                  </span>
+                  <ol className="space-y-1">
+                    {stops.map((parada, i) => (
+                      <li key={i} className="text-sm">
+                        <span className="font-semibold">
+                          {i + 1}. {formatStopAddress(parada)}
+                        </span>
+                        {parada.note && (
+                          <span className="text-gray-600"> — {parada.note}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
               <div>
                 <span className="text-sm text-gray-500 block mb-1">🟢 Destino:</span>
                 <p className="font-semibold">
@@ -910,7 +1087,7 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
                 )
               })}
             </div>
-            <div className="mt-4 pt-4 border-t grid grid-cols-3 gap-4 text-center">
+            <div className="mt-4 pt-4 border-t grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
               <div>
                 <p className="text-sm text-gray-500">Volumen Total</p>
                 <p className="font-bold text-lg">{parseFloat(totalVolume.toFixed(2))} m³</p>
@@ -920,11 +1097,39 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
                 <p className="font-bold text-lg">{totalWeight} kg</p>
               </div>
               <div>
+                <p className="text-sm text-gray-500">Equipo</p>
+                <p className="font-bold text-lg">👷</p>
+                <p className="text-xs text-gray-600">
+                  {totalCrew} {totalCrew === 1 ? 'persona' : 'personas'}
+                </p>
+              </div>
+              <div>
                 <p className="text-sm text-gray-500">Vehículo</p>
                 <p className="font-bold text-lg">🚚</p>
                 <p className="text-xs text-gray-600">{recommendedVehicle}</p>
               </div>
             </div>
+
+            {/* Por qué va esa cantidad de gente: sin esta línea el precio sube y el
+                cliente no tiene forma de saber de dónde salió. */}
+            {totalCrew > 1 && (
+              <p className="mt-3 text-xs text-gray-500">
+                {requiredCrew > 1 && (
+                  <>
+                    Tu carga incluye un artículo pesado, así que el traslado va con{' '}
+                    <strong>{requiredCrew} personas</strong> por seguridad.
+                  </>
+                )}
+                {totalCrew > requiredCrew && (
+                  <>
+                    {' '}
+                    Sumaste {totalCrew - requiredCrew}{' '}
+                    {totalCrew - requiredCrew === 1 ? 'ayudante' : 'ayudantes'} para agilizar
+                    el trabajo.
+                  </>
+                )}
+              </p>
+            )}
           </Card>
 
           {/* Embalaje Especial */}
@@ -990,10 +1195,23 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
           })()}
 
           {/* Servicios Adicionales */}
-          {(additionalServices.disassembly ||
+          {(() => {
+            // Recargo automático por pasarse del volumen de un camión. No lo elige el
+            // cliente, así que se muestra igual que un cargo más: si el precio sube, se
+            // tiene que ver por qué.
+            const overCapacity = overCapacitySurcharge(totalVolume, {
+              overCapacityThresholdM3: pricingConfig.services.overCapacityThresholdM3,
+              overCapacityPrice: pricingConfig.services.overCapacityPrice,
+            })
+            const fridgeCharged = additionalServices.fridgeDisassembly && hasFridge(items)
+            return (additionalServices.disassembly ||
             additionalServices.assembly ||
             additionalServices.packing ||
             additionalServices.unpacking ||
+            fridgeCharged ||
+            additionalServices.priority ||
+            additionalServices.stairsCarry ||
+            overCapacity > 0 ||
             additionalServices.observations) && (
               <Card>
                 <h3 className="font-semibold text-base mb-4 text-gray-700">Servicios Adicionales</h3>
@@ -1026,6 +1244,38 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
                       </div>
                     </div>
                   )}
+                  {fridgeCharged && (
+                    <div className="flex justify-between text-sm">
+                      <span>✓ Desarmado de refrigerador</span>
+                      <span className="font-semibold">${pricingConfig.services.fridgeDisassembly.toLocaleString()}</span>
+                    </div>
+                  )}
+                  {additionalServices.priority && (
+                    <div className="flex justify-between text-sm">
+                      <span>✓ Priority — agenda libre</span>
+                      <span className="font-semibold">${pricingConfig.services.priority.toLocaleString()}</span>
+                    </div>
+                  )}
+                  {additionalServices.stairsCarry && (
+                    <div className="text-sm">
+                      <span>✓ Muebles grandes por la escalera</span>
+                      <p className="mt-0.5 text-xs text-gray-500">Avisado al equipo: no caben en el ascensor.</p>
+                    </div>
+                  )}
+                  {overCapacity > 0 && (
+                    <div className="flex justify-between items-start text-sm">
+                      <div>
+                        <span>Segundo camión</span>
+                        <p className="mt-0.5 text-xs text-gray-500">
+                          Tu mudanza son {totalVolume.toFixed(1)} m³ y en un camión entran{' '}
+                          {pricingConfig.services.overCapacityThresholdM3} m³, así que va en{' '}
+                          {trucksNeeded(totalVolume, pricingConfig.services.overCapacityThresholdM3)}{' '}
+                          viajes.
+                        </p>
+                      </div>
+                      <span className="font-semibold whitespace-nowrap">${overCapacity.toLocaleString()}</span>
+                    </div>
+                  )}
                 </div>
                 {additionalServices.observations && (
                   <div className="mt-4 pt-4 border-t">
@@ -1034,7 +1284,8 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
                   </div>
                 )}
               </Card>
-            )}
+            )
+          })()}
         </div>
       </div>
 

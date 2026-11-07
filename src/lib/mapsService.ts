@@ -1,4 +1,5 @@
 import { MAPS_CONFIG } from '@/config/maps'
+import { routeDistanceWith, type RoutePoint } from '@/lib/routeDistance'
 
 /**
  * Tipos de respuesta de Geoapify APIs
@@ -276,6 +277,28 @@ export async function calculateDistanceByAddresses(
     console.error('Error in calculateDistanceByAddresses:', error)
     return MAPS_CONFIG.defaultDistance
   }
+}
+
+export type { RoutePoint }
+
+/**
+ * Distancia total de una ruta con paradas, medida desde el NAVEGADOR.
+ *
+ * La orquestación (sumar tramos, caer al viaje directo si alguno falla, y a la distancia
+ * por defecto si eso tampoco se puede) vive en `routeDistanceWith`, compartida con el
+ * servidor: los kilómetros se cobran, así que medirlos distinto en la web y en el chat
+ * sería cotizar distinto. Acá solo se le pasan las dos primitivas del navegador, que son
+ * las que traen caché y deduplicación.
+ */
+export async function calculateRouteDistance(points: RoutePoint[]): Promise<number> {
+  return routeDistanceWith(points, {
+    geocode: (p) => geocodeAddress(p.street, p.number, p.commune, p.region),
+    segmentKm: async (a, b) => {
+      const tramo = await calculateDistanceByCoordinates(a.lat, a.lng, b.lat, b.lng)
+      return tramo ? tramo.kilometers : null
+    },
+    defaultDistance: MAPS_CONFIG.defaultDistance,
+  })
 }
 
 /**

@@ -90,7 +90,7 @@ Si quieres personalizar las tarjetas de servicios:
 Los siguientes datos ya están integrados en toda la web:
 
 - **Email:** contacto@yomeencargo.cl
-- **Teléfono/WhatsApp:** +56 9 5439 0267
+- **Teléfono/WhatsApp:** +56 9 5233 4799
 - **Instagram:** [@yo.me.encargo_](https://www.instagram.com/yo.me.encargo_)
 - **Ubicación:** Región Metropolitana, Santiago, Chile
 - **Horario:** Lunes a Domingo, 9:00 - 19:00 hrs
@@ -256,4 +256,3 @@ src/
 ---
 
 **¿Dudas o necesitas ajustes?** ¡Contáctame! 🚀
-

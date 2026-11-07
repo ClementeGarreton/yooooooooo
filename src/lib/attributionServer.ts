@@ -44,6 +44,29 @@ export function hasAttribution(a: AttributionFields): boolean {
   return Boolean(a.gclid || a.gbraid || a.wbraid || a.utm_source || a.utm_campaign)
 }
 
+/** El visitor id que manda el cliente (cookie `_vla`) en `body.attribution`. */
+export function pickVisitorId(body: any): string | null {
+  const a = (body && (body.attribution ?? body)) || {}
+  const v = str(a.visitor_id)
+  return v && v.length <= 128 ? v : null
+}
+
+/**
+ * Guarda el visitor id en la cotizacion, solo si aun no tiene (first-touch por fila). Une
+ * a la persona con sus visitas aunque no haya llegado por un anuncio: la reserva hereda el
+ * origen en el dashboard porque es la misma persona (email/telefono). Best-effort: un
+ * fallo aca no frena la cotizacion.
+ */
+export async function saveProspectVisitorId(prospectId: string, visitorId: string | null): Promise<void> {
+  if (!visitorId) return
+  const { error } = await supabaseAdmin
+    .from('quote_prospects')
+    .update({ visitor_id: visitorId })
+    .eq('id', prospectId)
+    .is('visitor_id', null)
+  if (error) console.error(`[attribution] Error guardando visitor_id en quote_prospects#${prospectId}:`, error)
+}
+
 /**
  * Resuelve la atribucion para una reserva. Prioriza lo que trae el cliente; si no trae
  * nada, hereda la del `quote_prospects` correspondiente (mismo quote_id) — el caso de

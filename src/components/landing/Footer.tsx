@@ -4,8 +4,10 @@ import Link from 'next/link'
 import Image from 'next/image'
 import { Instagram, Mail, Phone } from 'lucide-react'
 import { trackEvent } from '@/lib/tracking'
+import { companyWhatsAppLink } from '@/lib/whatsapp'
+import { botWhatsAppLink } from '@/lib/whatsappBot'
 
-const PHONE = '+56 9 5439 0267'
+const PHONE = '+56 9 5233 4799'
 
 const SmallPhoneIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -66,7 +68,7 @@ export default function Footer() {
                 <Mail size={16} />
               </a>
               <a
-                href="https://wa.me/56954390267"
+                href={companyWhatsAppLink()}
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={() => trackEvent('Contact', { method: 'whatsapp', location: 'footer' })}
@@ -92,6 +94,7 @@ export default function Footer() {
                 { label: 'Mudanzas', href: '#servicios' },
                 { label: 'Traslados de carga', href: '#servicios' },
                 { label: 'Cotizar online', href: '/cotizador' },
+                { label: 'Blog', href: '/blog' },
               ].map(({ label, href }) => (
                 <li key={label}>
                   {href.startsWith('/') ? (
@@ -131,7 +134,7 @@ export default function Footer() {
                 <SmallPhoneIcon /> {PHONE}
               </a>
               <a
-                href="https://wa.me/56954390267"
+                href={companyWhatsAppLink()}
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={() => trackEvent('Contact', { method: 'whatsapp', location: 'footer' })}
@@ -139,6 +142,18 @@ export default function Footer() {
                 style={{ color: 'rgba(255,255,255,0.62)' }}
               >
                 <WaIcon /> WhatsApp
+              </a>
+              {/* Asistente automático: una entrada aparte, que no reemplaza ningún botón ni
+                  cambia el flujo del sitio. El texto prellenado es lo que lo activa. */}
+              <a
+                href={botWhatsAppLink()}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => trackEvent('Contact', { method: 'whatsapp_bot', location: 'footer' })}
+                className="flex items-center gap-2.5 transition-colors hover:text-white"
+                style={{ color: 'rgba(255,255,255,0.62)' }}
+              >
+                <WaIcon /> Cotizar por WhatsApp (asistente)
               </a>
               <a
                 href="mailto:contacto@yomeencargo.cl"
@@ -166,6 +181,9 @@ export default function Footer() {
             <Link href="/politica-de-privacidad" className="hover:text-white/70 transition-colors">
               Privacidad
             </Link>
+            <Link href="/politicas-de-garantia" className="hover:text-white/70 transition-colors">
+              Políticas de garantía
+            </Link>
             <span>
               Crafted by{' '}
               <a
@@ -176,16 +194,6 @@ export default function Footer() {
                 style={{ color: 'rgba(255,255,255,0.6)' }}
               >
                 vanlookstudio.com
-              </a>
-              {' '}·{' '}
-              <a
-                href="https://iaenblanco.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="transition-colors hover:text-white"
-                style={{ color: 'rgba(255,255,255,0.6)' }}
-              >
-                IAenBlanco
               </a>
             </span>
           </div>

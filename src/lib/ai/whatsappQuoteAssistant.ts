@@ -3,6 +3,7 @@ import { createStructuredResponseWithUsage, type AiUsage } from '@/lib/ai/openai
 import { buildInventoryAssistantPrompt } from '@/lib/ai/prompts'
 import { chooseClosestInventoryCandidate } from '@/lib/whatsapp/inventoryResolution'
 import { sectionQuestion, type QuoteSessionState, type PropertyType } from '@/lib/quoteSession'
+import { nextIntakePending } from '@/lib/whatsapp/freeformIntake'
 import { applyFocusedPropertyFallback, completeOneStoryHouse, pendingPropertyPlace } from '@/lib/whatsapp/propertyFlow'
 
 const nullableString = { type: ['string', 'null'] }
@@ -52,6 +53,7 @@ const patchSchema = {
     explicitConfirmation: { type: 'boolean' },
     requestHuman: { type: 'boolean' },
     normalizedSummary: { type: 'string' },
+    inventoryDescription: nullableString,
   },
   required: [
     'name', 'email', 'phone', 'isCompany', 'companyName', 'companyRut', 'date', 'time', 'isFlexible',
@@ -60,7 +62,7 @@ const patchSchema = {
     'originPropertyType', 'originFloor', 'originHasElevator', 'originParkingDistance',
     'destinationPropertyType', 'destinationFloor', 'destinationHasElevator', 'destinationParkingDistance',
     'disassembly', 'assembly', 'packing', 'unpacking', 'observations', 'servicesAnswered',
-    'explicitConfirmation', 'requestHuman', 'normalizedSummary',
+    'explicitConfirmation', 'requestHuman', 'normalizedSummary', 'inventoryDescription',
   ],
   additionalProperties: false,
 }
@@ -102,16 +104,19 @@ type GeneralPatch = {
   explicitConfirmation: boolean
   requestHuman: boolean
   normalizedSummary: string
+  inventoryDescription: string | null
 }
 
 function generalPrompt(section: number, state: QuoteSessionState) {
+  const focused = section === 0 && state.intake?.stage === 'review' ? nextIntakePending(state) : null
   return `
 Eres el parser estructurado del cotizador de Yo Me Encargo en WhatsApp.
 Tu tarea es EXTRAER datos del último mensaje del cliente y devolverlos en el schema. No inventes información.
 
-Estamos en la sección ${section}/7. Fecha actual de referencia: ${new Date().toISOString()}.
+Estamos en ${section === 0 ? 'modo libre: todas las secciones a la vez' : `la sección ${section}/7`}. Fecha actual de referencia: ${new Date().toISOString()}.
 ${section === 4 ? `Pregunta específica que se le hizo al cliente:
 ${sectionQuestion(4, state)}` : ''}
+${focused ? `Después de mostrar la ficha, se preguntó específicamente por «${focused.label}»: ${focused.question}. Si la respuesta es breve y responde inequívocamente a esa pregunta, asígnala SOLO a ese campo, sin afectar otro campo. Si responde varios datos, extrae todos los explícitos.` : ''}
 El cliente está en Chile. Interpreta fechas relativas como "mañana" o "el viernes" en contexto chileno y devuelve YYYY-MM-DD. Hora en HH:mm de 24 horas.
 
 Reglas:
@@ -120,6 +125,9 @@ Reglas:
 - Para direcciones separa calle, número y comuna. region debe usar uno de los códigos admitidos por el formulario (metropolitana, valparaiso, biobio, etc.). Puedes inferir la región cuando la comuna o ciudad la haga inequívoca; por ejemplo Providencia/Las Condes/Ñuñoa/Santiago => metropolitana. Si no puedes determinarla con confianza, null.
 - propertyType sólo puede ser casa, departamento, oficina, bodega u otro.
 - "sin ascensor", "por escalera" => hasElevator=false. "con ascensor" => true.
+- EN MODO LIBRE (sección 0): extrae TODOS los campos explícitos de CUALQUIER sección en el mismo mensaje. No avances secuencialmente. Si el texto dice "origen", atribuye solo al origen; si dice "destino", solo al destino. Si el lugar no es inequívoco, devuelve null para ese lado.
+- inventoryDescription: extrae únicamente el fragmento que describe muebles, electrodomésticos, cajas y cantidades que quiere TRASLADAR (p.ej. "dos camas y un refrigerador"); devuelve null si no hay objetos. No incluyas direcciones, personas ni servicios en inventoryDescription. Si dice que reemplaza un mueble por otro, redacta la nueva lista solo si es explícita; nunca adivines inventario existente.
+- Servicios en modo libre: marca true/false solo al mencionar inequívocamente cada servicio; si dice "solo desarmado", los otros servicios son false. Si dice "ningún servicio", los cuatro false y servicesAnswered=true. Para servicios sobre objetos concretos, anota en observations los objetos específicos sin ampliar el servicio a todo el inventario.
 - EN SECCIÓN 4 LA PREGUNTA SE FORMULA DE A UN LUGAR POR VEZ: "retiro (origen)" o "entrega (destino)". Si la respuesta no nombra lugar, atribuye los datos SOLO al lugar preguntado. Nunca copies respuestas de un lugar al otro.
 - Casa de un piso ("un piso", "una planta") => floor=1 y hasElevator=false. No supongas que un departamento no tiene ascensor.
 - Si el cliente afirma que el camión puede estacionarse en la puerta, parkingDistance=0; "a 20 metros" = 20. No infieras la distancia de solo mencionar una entrada.
@@ -199,12 +207,13 @@ export async function parseGeneralWhatsAppTurn(section: number, state: QuoteSess
 
   // El flujo WhatsApp de extras es determinista. Un parser de otra sección
   // no puede seleccionar extras ni cerrar anticipadamente la sección 6.
-  if (section === 6) {
+  if (section === 6 || section === 0) {
     assignIf(next.additionalServices, 'disassembly', data.disassembly)
     assignIf(next.additionalServices, 'assembly', data.assembly)
     assignIf(next.additionalServices, 'packing', data.packing)
     assignIf(next.additionalServices, 'unpacking', data.unpacking)
-    if (data.servicesAnswered) next.additionalServices.observations = data.observations || ''
+    if (data.observations !== null) next.additionalServices.observations = data.observations
+    if (data.servicesAnswered && data.observations === null) next.additionalServices.observations = next.additionalServices.observations === '__pending__' ? '' : next.additionalServices.observations
   } else if (data.observations !== null && next.additionalServices.observations !== '__pending__') {
     next.additionalServices.observations = data.observations
   }

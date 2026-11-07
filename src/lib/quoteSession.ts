@@ -6,6 +6,8 @@ import { extrasQuestion, type ExtrasStep } from '@/lib/whatsapp/extrasFlow'
 export type PropertyType = 'casa' | 'departamento' | 'oficina' | 'bodega' | 'otro'
 
 export interface QuoteSessionState {
+  /** Captura conversacional en JSONB: compatible con sesiones anteriores. */
+  intake?: { stage: 'describe' | 'review'; serviceAnswers: Array<'packing' | 'disassembly' | 'assembly' | 'unpacking'> }
   personalInfo: {
     name: string | null
     email: string | null
@@ -132,6 +134,7 @@ export function createEmptyQuoteState(phone: string): QuoteSessionState {
       extrasStep: 'packing',
     },
     confirmed: false,
+    intake: { stage: 'describe', serviceAnswers: [] },
   }
 }
 

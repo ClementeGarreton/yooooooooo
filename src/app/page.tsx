@@ -8,9 +8,16 @@ import Servicios from '@/components/landing/Servicios'
 import FAQ from '@/components/landing/FAQ'
 import CtaFinal from '@/components/landing/CtaFinal'
 import Footer from '@/components/landing/Footer'
-import ChatBot from '@/components/ui/ChatBot'
+import { getGoogleReviews } from '@/lib/googleReviews'
+import type { Metadata } from 'next'
 
-export default function HomePage() {
+export const metadata: Metadata = {
+  alternates: { canonical: '/' },
+}
+
+export default async function HomePage() {
+  const google = await getGoogleReviews()
+
   return (
     <>
       <Navbar />
@@ -19,13 +26,12 @@ export default function HomePage() {
         <ClientLogos />
         <HowItWorks />
         <WhyChooseUs />
-        <Testimonials />
+        <Testimonials google={google} />
         <Servicios />
         <FAQ />
         <CtaFinal />
       </main>
       <Footer />
-      <ChatBot />
     </>
   )
 }

@@ -6,6 +6,11 @@ import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import { Truck, Plus, Minus, AlertCircle, CheckCircle } from 'lucide-react'
 import toast from 'react-hot-toast'
+import {
+  VEHICLE_COLORS,
+  nextFreeColorKey,
+  resolveVehicleColor,
+} from '@/lib/vehicleColors'
 
 interface FleetConfig {
   id: string
@@ -23,6 +28,22 @@ interface Vehicle {
   status: VehicleStatus
   driver?: string
   phone?: string
+  /** Color con el que se identifica en el link de choferes y en Reservas. */
+  color?: string
+  /** Medidas útiles del cajón, en metros. 0 = sin medir. */
+  length?: number
+  width?: number
+  height?: number
+  /** Carga máxima en kilos. 0 = sin definir. */
+  maxWeight?: number
+}
+
+/** Volumen útil derivado de las medidas. Se calcula, no se guarda, para que no se desincronice. */
+function cargoVolume(v: Vehicle): number {
+  const l = Number(v.length) || 0
+  const w = Number(v.width) || 0
+  const h = Number(v.height) || 0
+  return l > 0 && w > 0 && h > 0 ? l * w * h : 0
 }
 
 // Vehículos por defecto derivados de num_vehicles, usados solo cuando la BD aún no
@@ -34,7 +55,8 @@ function buildDefaultVehicles(count: number): Vehicle[] {
     capacity: 1,
     status: 'active' as const,
     driver: '',
-    phone: ''
+    phone: '',
+    color: VEHICLE_COLORS[i % VEHICLE_COLORS.length].key
   }))
 }
 
@@ -52,8 +74,20 @@ export default function FleetManagement() {
     name: '',
     capacity: 1,
     driver: '',
-    phone: ''
+    phone: '',
+    color: VEHICLE_COLORS[0].key
   })
+
+  const openAddVehicle = () => {
+    setNewVehicle({
+      name: '',
+      capacity: 1,
+      driver: '',
+      phone: '',
+      color: nextFreeColorKey(vehicles.map((v) => v.color))
+    })
+    setShowAddVehicle(true)
+  }
 
   useEffect(() => {
     fetchFleetData()
@@ -128,15 +162,20 @@ export default function FleetManagement() {
     let next: Vehicle[]
     if (newSize > vehicles.length) {
       const toAdd = newSize - vehicles.length
-      const additions = Array.from({ length: toAdd }, (_, i) => ({
-        id: nextVehicleId(vehicles) + i,
-        name: `Camión ${vehicles.length + i + 1}`,
-        capacity: 1,
-        status: 'active' as const,
-        driver: '',
-        phone: ''
-      }))
-      next = [...vehicles, ...additions]
+      // Se agregan de a uno para que cada nuevo camión tome un color todavía libre,
+      // contando también los que se acaban de crear en esta misma tanda.
+      next = [...vehicles]
+      for (let i = 0; i < toAdd; i++) {
+        next.push({
+          id: nextVehicleId(next),
+          name: `Camión ${next.length + 1}`,
+          capacity: 1,
+          status: 'active',
+          driver: '',
+          phone: '',
+          color: nextFreeColorKey(next.map((v) => v.color))
+        })
+      }
     } else {
       next = vehicles.slice(0, newSize)
     }
@@ -156,7 +195,8 @@ export default function FleetManagement() {
       capacity: newVehicle.capacity,
       status: 'active',
       driver: newVehicle.driver,
-      phone: newVehicle.phone
+      phone: newVehicle.phone,
+      color: newVehicle.color
     }
 
     const ok = await persistVehicles(
@@ -164,7 +204,7 @@ export default function FleetManagement() {
       'Vehículo agregado'
     )
     if (ok) {
-      setNewVehicle({ name: '', capacity: 1, driver: '', phone: '' })
+      setNewVehicle({ name: '', capacity: 1, driver: '', phone: '', color: VEHICLE_COLORS[0].key })
       setShowAddVehicle(false)
     }
   }
@@ -178,6 +218,39 @@ export default function FleetManagement() {
       vehicles.filter((v) => v.id !== vehicleId),
       'Vehículo eliminado'
     )
+  }
+
+  const updateVehicleColor = async (vehicleId: number, color: string) => {
+    const next = vehicles.map((v) => (v.id === vehicleId ? { ...v, color } : v))
+    await persistVehicles(next, 'Color del camión actualizado')
+  }
+
+  // Edición de ficha (nombre, chofer, teléfono, medidas). Se edita en un borrador local y
+  // solo se persiste al guardar: así escribir un nombre no dispara un PATCH por tecla.
+  const [editingVehicleId, setEditingVehicleId] = useState<number | null>(null)
+  const [vehicleDraft, setVehicleDraft] = useState<Vehicle | null>(null)
+
+  const startEditVehicle = (vehicle: Vehicle) => {
+    setEditingVehicleId(vehicle.id)
+    setVehicleDraft({ ...vehicle })
+  }
+
+  const cancelEditVehicle = () => {
+    setEditingVehicleId(null)
+    setVehicleDraft(null)
+  }
+
+  const saveVehicleDraft = async () => {
+    if (!vehicleDraft) return
+    if (!vehicleDraft.name.trim()) {
+      toast.error('El nombre del vehículo es requerido')
+      return
+    }
+    const ok = await persistVehicles(
+      vehicles.map((v) => (v.id === vehicleDraft.id ? { ...vehicleDraft, name: vehicleDraft.name.trim() } : v)),
+      'Vehículo actualizado'
+    )
+    if (ok) cancelEditVehicle()
   }
 
   const updateVehicleStatus = async (vehicleId: number, status: VehicleStatus) => {
@@ -309,7 +382,7 @@ export default function FleetManagement() {
             </p>
           </div>
           <Button
-            onClick={() => setShowAddVehicle(true)}
+            onClick={openAddVehicle}
             variant="outline"
             size="sm"
           >
@@ -319,14 +392,17 @@ export default function FleetManagement() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {vehicles.map((vehicle) => (
+          {vehicles.map((vehicle, index) => {
+            const color = resolveVehicleColor(vehicle, index)
+            return (
             <div
               key={vehicle.id}
-              className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow"
+              className="border border-l-4 border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow"
+              style={{ borderLeftColor: color.hex }}
             >
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <Truck className="w-5 h-5 text-gray-600" />
+                  <Truck className="w-5 h-5" style={{ color: color.hex }} />
                   <h4 className="font-semibold text-gray-900">{vehicle.name}</h4>
                 </div>
                 <span
@@ -339,25 +415,179 @@ export default function FleetManagement() {
                 </span>
               </div>
 
-              <div className="space-y-2 text-sm text-gray-600">
-                <div className="flex justify-between">
-                  <span>Capacidad:</span>
-                  <span className="font-medium">
-                    {vehicle.capacity} mudanza{vehicle.capacity !== 1 ? 's' : ''}
+              {editingVehicleId === vehicle.id && vehicleDraft ? (
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Nombre</label>
+                    <Input
+                      type="text"
+                      value={vehicleDraft.name}
+                      onChange={(e) => setVehicleDraft({ ...vehicleDraft, name: e.target.value })}
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Conductor</label>
+                      <Input
+                        type="text"
+                        value={vehicleDraft.driver || ''}
+                        onChange={(e) => setVehicleDraft({ ...vehicleDraft, driver: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Teléfono</label>
+                      <Input
+                        type="tel"
+                        value={vehicleDraft.phone || ''}
+                        onChange={(e) => setVehicleDraft({ ...vehicleDraft, phone: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">
+                      Medidas del cajón (metros)
+                    </label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(['length', 'width', 'height'] as const).map((dim) => (
+                        <Input
+                          key={dim}
+                          type="number"
+                          step="0.1"
+                          min="0"
+                          placeholder={dim === 'length' ? 'Largo' : dim === 'width' ? 'Ancho' : 'Alto'}
+                          value={vehicleDraft[dim] || ''}
+                          onChange={(e) =>
+                            setVehicleDraft({ ...vehicleDraft, [dim]: Number(e.target.value) || 0 })
+                          }
+                        />
+                      ))}
+                    </div>
+                    {cargoVolume(vehicleDraft) > 0 && (
+                      <p className="mt-1 text-xs text-gray-500">
+                        Volumen útil: {cargoVolume(vehicleDraft).toFixed(2)} m³
+                      </p>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">
+                        Carga máx. (kg)
+                      </label>
+                      <Input
+                        type="number"
+                        min="0"
+                        value={vehicleDraft.maxWeight || ''}
+                        onChange={(e) =>
+                          setVehicleDraft({ ...vehicleDraft, maxWeight: Number(e.target.value) || 0 })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">
+                        Mudanzas simultáneas
+                      </label>
+                      <Input
+                        type="number"
+                        min="1"
+                        value={vehicleDraft.capacity}
+                        onChange={(e) =>
+                          setVehicleDraft({ ...vehicleDraft, capacity: Number(e.target.value) || 1 })
+                        }
+                      />
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button onClick={saveVehicleDraft} size="sm" className="flex-1" disabled={saving}>
+                      Guardar
+                    </Button>
+                    <Button onClick={cancelEditVehicle} variant="outline" size="sm" className="flex-1">
+                      Cancelar
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2 text-sm text-gray-600">
+                  <div className="flex justify-between">
+                    <span>Capacidad:</span>
+                    <span className="font-medium">
+                      {vehicle.capacity} mudanza{vehicle.capacity !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+                  {cargoVolume(vehicle) > 0 && (
+                    <div className="flex justify-between">
+                      <span>Cajón:</span>
+                      <span className="font-medium">
+                        {vehicle.length}×{vehicle.width}×{vehicle.height} m ·{' '}
+                        {cargoVolume(vehicle).toFixed(1)} m³
+                      </span>
+                    </div>
+                  )}
+                  {!!vehicle.maxWeight && (
+                    <div className="flex justify-between">
+                      <span>Carga máx.:</span>
+                      <span className="font-medium">
+                        {vehicle.maxWeight.toLocaleString('es-CL')} kg
+                      </span>
+                    </div>
+                  )}
+                  {vehicle.driver && (
+                    <div className="flex justify-between">
+                      <span>Conductor:</span>
+                      <span className="font-medium">{vehicle.driver}</span>
+                    </div>
+                  )}
+                  {vehicle.phone && (
+                    <div className="flex justify-between">
+                      <span>Teléfono:</span>
+                      <span className="font-medium">{vehicle.phone}</span>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => startEditVehicle(vehicle)}
+                    className="text-xs font-medium text-primary-600 hover:text-primary-700"
+                  >
+                    Editar ficha
+                  </button>
+                </div>
+              )}
+
+              {/* El color es la referencia que usan los choferes en el link de trabajos:
+                  cambiarlo cambia cómo ven su bloque, así que se edita acá y en un solo lugar. */}
+              <div className="mt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-gray-600">Color</span>
+                  <span className="text-xs font-medium" style={{ color: color.ink }}>
+                    {color.label}
                   </span>
                 </div>
-                {vehicle.driver && (
-                  <div className="flex justify-between">
-                    <span>Conductor:</span>
-                    <span className="font-medium">{vehicle.driver}</span>
-                  </div>
-                )}
-                {vehicle.phone && (
-                  <div className="flex justify-between">
-                    <span>Teléfono:</span>
-                    <span className="font-medium">{vehicle.phone}</span>
-                  </div>
-                )}
+                <div className="flex flex-wrap gap-1.5">
+                  {VEHICLE_COLORS.map((option) => {
+                    const selected = option.key === color.key
+                    const takenBy = vehicles.find(
+                      (v, i) => v.id !== vehicle.id && resolveVehicleColor(v, i).key === option.key
+                    )
+                    return (
+                      <button
+                        key={option.key}
+                        type="button"
+                        onClick={() => updateVehicleColor(vehicle.id, option.key)}
+                        disabled={saving || selected}
+                        title={
+                          takenBy
+                            ? `${option.label} — ya lo usa ${takenBy.name}`
+                            : option.label
+                        }
+                        aria-label={`Color ${option.label}`}
+                        aria-pressed={selected}
+                        className={`h-6 w-6 rounded-full transition-transform hover:scale-110 disabled:hover:scale-100 ${
+                          selected ? 'ring-2 ring-offset-2 ring-gray-900' : ''
+                        } ${takenBy ? 'opacity-40' : ''}`}
+                        style={{ backgroundColor: option.hex }}
+                      />
+                    )
+                  })}
+                </div>
               </div>
 
               <div className="flex gap-2 mt-4">
@@ -390,7 +620,8 @@ export default function FleetManagement() {
                 </Button>
               </div>
             </div>
-          ))}
+            )
+          })}
         </div>
       </Card>
 
@@ -460,6 +691,37 @@ export default function FleetManagement() {
                   }
                   placeholder="+56912345678"
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Color (con el que lo ven los choferes)
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {VEHICLE_COLORS.map((option) => {
+                    const takenBy = vehicles.find(
+                      (v, i) => resolveVehicleColor(v, i).key === option.key
+                    )
+                    return (
+                      <button
+                        key={option.key}
+                        type="button"
+                        onClick={() => setNewVehicle({ ...newVehicle, color: option.key })}
+                        title={
+                          takenBy ? `${option.label} — ya lo usa ${takenBy.name}` : option.label
+                        }
+                        aria-label={`Color ${option.label}`}
+                        aria-pressed={newVehicle.color === option.key}
+                        className={`h-7 w-7 rounded-full transition-transform hover:scale-110 ${
+                          newVehicle.color === option.key
+                            ? 'ring-2 ring-offset-2 ring-gray-900'
+                            : ''
+                        } ${takenBy ? 'opacity-40' : ''}`}
+                        style={{ backgroundColor: option.hex }}
+                      />
+                    )
+                  })}
+                </div>
               </div>
             </div>
 

@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
 import {
+  buildUnifiedCustomers,
   groupBookingsByMonth,
-  groupProspectsBySource,
+  groupCustomersBySource,
   buildFunnel,
 } from '@/lib/adminAnalytics'
+import { mergeBookingQuoteDetails } from '@/lib/adminBookingQuoteData'
 
 // Datos en vivo: no cachear en build.
 export const dynamic = 'force-dynamic'
@@ -16,8 +18,15 @@ export async function GET() {
     const [bookingsRes, prospectsRes] = await Promise.all([
       supabaseAdmin
         .from('bookings')
-        .select('scheduled_date, status, total_price, original_price'),
-      supabaseAdmin.from('quote_prospects').select('source, status'),
+        .select(
+          'id, quote_id, client_email, client_name, client_phone, is_company, company_name, company_rut, scheduled_date, scheduled_time, status, total_price, original_price, adjusted_price, amount_paid, payment_status, payment_type'
+        ),
+      supabaseAdmin
+        .from('quote_prospects')
+        .select(
+          'id, quote_id, email, name, phone, source, status, is_frequent, is_company, company_name, company_rut, notes, scheduled_date, scheduled_time, converted_booking_id, lead_key, created_at'
+        )
+        .order('created_at', { ascending: false }),
     ])
 
     if (bookingsRes.error) {
@@ -28,18 +37,21 @@ export async function GET() {
     }
 
     const bookings = bookingsRes.data || []
-    const prospects = prospectsRes.data || []
+    const allProspects = prospectsRes.data || []
+    const prospects = allProspects.filter((prospect) => {
+      const key = String(prospect.lead_key || '')
+      return !key.startsWith('manual_customer:') && !key.startsWith('admin_booking:')
+    })
+    const enrichedBookings = mergeBookingQuoteDetails(bookings, allProspects)
+    const customers = buildUnifiedCustomers(enrichedBookings, allProspects)
 
     return NextResponse.json({
       monthly: groupBookingsByMonth(bookings, MONTHS_BACK),
-      sources: groupProspectsBySource(prospects),
+      sources: groupCustomersBySource(customers),
       funnel: buildFunnel(prospects, bookings),
     })
   } catch (error) {
     console.error('Error in /api/admin/analytics:', error)
-    return NextResponse.json(
-      { error: 'Error obteniendo analítica' },
-      { status: 500 }
-    )
+    return NextResponse.json({ error: 'Error obteniendo analítica' }, { status: 500 })
   }
 }

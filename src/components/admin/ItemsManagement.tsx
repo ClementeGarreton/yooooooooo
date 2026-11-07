@@ -38,7 +38,8 @@ interface CatalogItem {
 
 const CATEGORIES = ['Sala', 'Comedor', 'Dormitorio', 'Electrodomésticos', 'Oficina', 'Otros']
 
-export default function ItemsManagement() {
+/** `canAdjust` = puede editar, desactivar y borrar. Sin eso solo agrega ítems nuevos. */
+export default function ItemsManagement({ canAdjust = true }: { canAdjust?: boolean }) {
   const [items, setItems] = useState<CatalogItem[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -324,7 +325,7 @@ export default function ItemsManagement() {
                 <h3 className="font-semibold text-gray-900 text-lg">{item.name}</h3>
                 <p className="text-sm text-gray-500">{item.category}</p>
               </div>
-              <button
+              {canAdjust && <button
                 onClick={() => toggleActive(item)}
                 className={`p-2 rounded-lg transition-colors ${
                   item.is_active 
@@ -334,7 +335,7 @@ export default function ItemsManagement() {
                 title={item.is_active ? 'Desactivar' : 'Activar'}
               >
                 {item.is_active ? <Eye className="w-5 h-5" /> : <EyeOff className="w-5 h-5" />}
-              </button>
+              </button>}
             </div>
 
             <div className="grid grid-cols-2 gap-2 mb-3 text-sm">
@@ -360,7 +361,7 @@ export default function ItemsManagement() {
               ) : null}
             </div>
 
-            <div className="flex gap-2 pt-3 border-t">
+            {canAdjust && <div className="flex gap-2 pt-3 border-t">
               <Button
                 variant="outline"
                 size="sm"
@@ -378,7 +379,7 @@ export default function ItemsManagement() {
               >
                 <Trash2 className="w-4 h-4" />
               </Button>
-            </div>
+            </div>}
           </Card>
         ))}
       </div>

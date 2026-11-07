@@ -31,6 +31,7 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     return (
       <button
         className={cn(baseStyles, variants[variant], sizes[size], className)}
+        data-ui="button"
         disabled={disabled || isLoading}
         ref={ref}
         {...props}

@@ -1,21 +1,14 @@
-import crypto from 'crypto'
 import jsPDF from 'jspdf'
 import { supabaseAdmin } from '@/lib/supabase'
 import { MAPS_CONFIG } from '@/config/maps'
 import type { QuoteSessionRow, QuoteSessionState } from '@/lib/quoteSession'
+import { calculateQuote } from '@/lib/quotePricing'
+import { readPricingConfig } from '@/lib/server/pricingConfigServer'
+import { geocodeAddressServer, segmentDistanceServer } from '@/lib/server/geoapifyServer'
+import { routeDistanceWith, type RoutePoint } from '@/lib/routeDistance'
+import { upsertQuoteProspect } from '@/lib/server/quoteProspects'
+import { siteBaseUrl, toHiddenFileUrl } from '@/lib/fileLinks'
 import { loadQuotePhoto } from '@/lib/whatsapp/photoStorage'
-
-interface ServerPricingConfig {
-  basePrice: number
-  pricePerCubicMeter: number
-  pricePerKilometer: number
-  freeKilometers: number
-  floorSurcharge: number
-  additionalServices: { disassembly: number; assembly: number; packing: number; unpacking: number }
-  specialPackaging: { fragile: number; electronics: number; artwork: number }
-  timeSurcharges: { saturday: number; sunday: number; holiday: number }
-  discounts: { flexibility: number; advanceBooking: number; repeatCustomer: number }
-}
 
 interface CatalogRow {
   id: string | number
@@ -39,83 +32,35 @@ export interface ServerQuoteResult {
   pdfFileName: string
 }
 
-async function getServerPricing(): Promise<ServerPricingConfig> {
-  const { data } = await supabaseAdmin
-    .from('pricing_config')
-    .select('*')
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  return {
-    basePrice: Number(data?.base_price ?? 50000),
-    pricePerCubicMeter: Number(data?.price_per_cubic_meter ?? 15000),
-    pricePerKilometer: Number(data?.price_per_kilometer ?? 800),
-    freeKilometers: Number(data?.free_kilometers ?? 50),
-    floorSurcharge: Number(data?.floor_surcharge ?? 5000),
-    additionalServices: {
-      disassembly: Number(data?.additional_services?.disassembly ?? 15000),
-      assembly: Number(data?.additional_services?.assembly ?? 15000),
-      packing: Number(data?.additional_services?.packing ?? 25000),
-      unpacking: Number(data?.additional_services?.unpacking ?? 20000),
-    },
-    specialPackaging: {
-      fragile: Number(data?.special_packaging?.fragile ?? 10000),
-      electronics: Number(data?.special_packaging?.electronics ?? 15000),
-      artwork: Number(data?.special_packaging?.artwork ?? 25000),
-    },
-    timeSurcharges: {
-      saturday: Number(data?.time_surcharges?.saturday ?? 20),
-      sunday: Number(data?.time_surcharges?.sunday ?? 50),
-      holiday: Number(data?.time_surcharges?.holiday ?? 100),
-    },
-    discounts: {
-      flexibility: Number(data?.discounts?.flexibility ?? 10),
-      advanceBooking: Number(data?.discounts?.advanceBooking ?? 5),
-      repeatCustomer: Number(data?.discounts?.repeatCustomer ?? 15),
-    },
-  }
-}
-
 function addressText(address: QuoteSessionState['origin']['address']) {
   return [address.street, address.number, address.commune, address.region, 'Chile'].filter(Boolean).join(', ')
 }
 
-async function geocode(address: QuoteSessionState['origin']['address']) {
-  if (!MAPS_CONFIG.apiKey) return null
-  const url = new URL(MAPS_CONFIG.geocodingUrl)
-  url.searchParams.set('text', addressText(address))
-  url.searchParams.set('apiKey', MAPS_CONFIG.apiKey)
-  url.searchParams.set('lang', 'es')
-  url.searchParams.set('filter', 'countrycode:cl')
-  url.searchParams.set('limit', '1')
-  const response = await fetch(url.toString())
-  if (!response.ok) return null
-  const data = await response.json()
-  const coordinates = data?.features?.[0]?.geometry?.coordinates
-  return coordinates ? { lat: coordinates[1], lng: coordinates[0] } : null
-}
-
+/**
+ * Distancia de la ruta con las mismas reglas del cotizador web (`/api/quote/calculate`):
+ * misma geocodificación con guarda de región y misma distancia por defecto si algo falla.
+ */
 async function calculateDistance(state: QuoteSessionState) {
-  if (!MAPS_CONFIG.apiKey) return 10
-  try {
-    const [origin, destination] = await Promise.all([geocode(state.origin.address), geocode(state.destination.address)])
-    if (!origin || !destination) return 10
-    const url = new URL(MAPS_CONFIG.distanceMatrixUrl)
-    url.searchParams.set('waypoints', `${origin.lat},${origin.lng}|${destination.lat},${destination.lng}`)
-    url.searchParams.set('mode', 'drive')
-    url.searchParams.set('apiKey', MAPS_CONFIG.apiKey)
-    const response = await fetch(url.toString())
-    if (!response.ok) return 10
-    const data = await response.json()
-    const meters = Number(data?.features?.[0]?.properties?.distance || 0)
-    return meters > 0 ? Math.round((meters / 1000) * 100) / 100 : 10
-  } catch {
-    return 10
-  }
+  const point = (address: QuoteSessionState['origin']['address']): RoutePoint | null =>
+    address.street && address.commune
+      ? { street: address.street, number: address.number || '', commune: address.commune, region: address.region || '' }
+      : null
+  const points = [point(state.origin.address), point(state.destination.address)].filter((p): p is RoutePoint => p !== null)
+  return routeDistanceWith(points, {
+    geocode: async (p) => {
+      const r = await geocodeAddressServer(p)
+      return r.ok ? { lat: r.lat, lng: r.lng } : null
+    },
+    segmentKm: async (a, b) => {
+      const r = await segmentDistanceServer(a.lat, a.lng, b.lat, b.lng)
+      return r.ok ? r.kilometers : null
+    },
+    defaultDistance: MAPS_CONFIG.defaultDistance,
+  })
 }
 
-async function calculate(state: QuoteSessionState) {
+/** Cotiza el estado de una sesión. Solo lee (catálogo, precios, distancia): no guarda nada. */
+export async function calculateSessionQuote(state: QuoteSessionState) {
   const ids = state.items.map((item) => item.catalogItemId)
   const { data: rows, error } = await supabaseAdmin
     .from('catalog_items')
@@ -143,52 +88,36 @@ async function calculate(state: QuoteSessionState) {
 
   if (!items.length) throw new Error('El inventario no contiene items válidos del catálogo')
 
-  const pricing = await getServerPricing()
-  const totalVolume = items.reduce((sum, item) => sum + item.volume * item.quantity, 0)
-  const totalWeight = items.reduce((sum, item) => sum + item.weight * item.quantity, 0)
-  const totalDistance = await calculateDistance(state)
-
-  let recommendedVehicle = 'Camioneta'
-  if (totalVolume > 20) recommendedVehicle = 'Furgón Grande'
-  else if (totalVolume > 10) recommendedVehicle = 'Furgón Mediano'
-  else if (totalVolume > 5) recommendedVehicle = 'Camioneta Grande'
-
-  let price = pricing.basePrice + totalVolume * pricing.pricePerCubicMeter
-  price += Math.max(0, totalDistance - pricing.freeKilometers) * pricing.pricePerKilometer
-
-  if (state.origin.details.floor && state.origin.details.hasElevator === false) {
-    price += state.origin.details.floor * pricing.floorSurcharge
-  }
-  if (state.destination.details.floor && state.destination.details.hasElevator === false) {
-    price += state.destination.details.floor * pricing.floorSurcharge
-  }
-
-  if (state.schedule.date) {
-    const day = new Date(`${state.schedule.date}T12:00:00-03:00`).getDay()
-    // Mantiene la misma regla vigente del cotizador web: sábado y domingo usan el recargo de sábado.
-    if (day === 6 || day === 0) price += (price * pricing.timeSurcharges.saturday) / 100
-  }
-
-  if (state.additionalServices.disassembly) price += pricing.additionalServices.disassembly
-  if (state.additionalServices.assembly) price += pricing.additionalServices.assembly
-
-  const fragileCount = items.filter((item) => item.isFragile || item.isGlass).length
-  price += fragileCount * pricing.specialPackaging.fragile
-
-  if (state.schedule.isFlexible) price -= (price * pricing.discounts.flexibility) / 100
-  // Boleta y factura no añaden por sí mismas un 19%: configuración de precios existente manda.
+  // EL PRECIO NO SE CALCULA ACÁ. Se arma el contexto (configuración vigente del panel +
+  // distancia real) y se llama a `calculateQuote`, la única fórmula del sistema: la misma
+  // del cotizador web. Así una cotización por WhatsApp da el mismo valor que en la web y
+  // sigue cualquier cambio que se haga en Configuración → Precios.
+  const [pricing, totalDistance] = await Promise.all([readPricingConfig(), calculateDistance(state)])
+  const result = calculateQuote({
+    items,
+    origin: { floor: state.origin.details.floor ?? undefined, hasElevator: state.origin.details.hasElevator ?? undefined },
+    destination: { floor: state.destination.details.floor ?? undefined, hasElevator: state.destination.details.hasElevator ?? undefined },
+    distanceKm: totalDistance,
+    dateTime: state.schedule.date ? `${state.schedule.date}T${state.schedule.time || '12:00'}:00` : null,
+    isFlexible: state.schedule.isFlexible,
+    isCompany: state.personalInfo.isCompany,
+    additionalServices: { disassembly: state.additionalServices.disassembly, assembly: state.additionalServices.assembly },
+    pricing,
+  })
 
   return {
-    estimatedPrice: Math.round(price),
-    totalVolume: Math.round(totalVolume * 100) / 100,
-    totalWeight: Math.round(totalWeight * 100) / 100,
+    estimatedPrice: result.estimatedPrice,
+    totalVolume: Math.round(result.totalVolume * 100) / 100,
+    totalWeight: Math.round(result.totalWeight * 100) / 100,
     totalDistance,
-    recommendedVehicle,
+    recommendedVehicle: result.recommendedVehicle,
+    requiredCrew: result.requiredCrew,
+    totalCrew: result.totalCrew,
     items,
   }
 }
 
-function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnType<typeof calculate>>, quoteId: string, photos: string[] = []) {
+function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnType<typeof calculateSessionQuote>>, quoteId: string, photos: string[] = []) {
   const pdf = new jsPDF('p', 'mm', 'a4')
   const width = pdf.internal.pageSize.getWidth()
   let y = 18
@@ -214,7 +143,7 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
   pdf.setFontSize(10)
   pdf.text(`Nombre: ${state.personalInfo.name || ''}`, 18, y); y += 6
   pdf.text(`Email: ${state.personalInfo.email || ''}`, 18, y); y += 6
-  pdf.text(`Telefono/contacto: ${state.personalInfo.phone}`, 18, y); y += 6
+  pdf.text(`Telefono: ${state.personalInfo.phone}`, 18, y); y += 6
   pdf.text(`Documento solicitado: ${state.taxDocument || 'Por definir'}`, 18, y); y += 9
 
   pdf.setFont('helvetica', 'bold')
@@ -225,7 +154,7 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
   pdf.text(`Fecha: ${state.schedule.date || ''} · ${state.schedule.time || ''}`, 18, y); y += 6
   pdf.text(`Origen: ${addressText(state.origin.address)}`, 18, y, { maxWidth: 175 }); y += 8
   pdf.text(`Destino: ${addressText(state.destination.address)}`, 18, y, { maxWidth: 175 }); y += 8
-  pdf.text(`Distancia estimada del trayecto: ${quote.totalDistance} km`, 18, y); y += 6
+  pdf.text(`Distancia estimada: ${quote.totalDistance} km`, 18, y); y += 6
   pdf.text(`Acarreo en retiro: ${state.origin.details.parkingDistance ?? 'Sin dato'} m del camión a la puerta`, 18, y); y += 6
   pdf.text(`Acarreo en entrega: ${state.destination.details.parkingDistance ?? 'Sin dato'} m del camión a la puerta`, 18, y); y += 9
 
@@ -259,6 +188,8 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
   pdf.text('Valor estimativo sujeto a validacion de volumen, accesos, disponibilidad y condiciones reales del servicio.', 18, 282, { maxWidth: 175 })
   pdf.text('Afina los detalles de tu mudanza con nuestro ejecutivo en WhatsApp: +56 9 5439 0267', 18, 288, { maxWidth: 175 })
 
+  // Anexos del expediente: incluir hasta 12 fotografías del inventario sin alterar
+  // precios, kilometraje, ni la integración de prospectos que mantiene el template.
   if (photos.length) {
     pdf.addPage()
     pdf.setTextColor(20, 20, 20)
@@ -269,69 +200,77 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
     pdf.setFontSize(9)
     pdf.text('Fotografías originales aportadas por el cliente (referenciales).', 18, 25)
     let photoY = 34
-    let photoColumn = 0
     for (let i = 0; i < photos.length; i++) {
       if (i > 0 && i % 6 === 0) {
         pdf.addPage()
         photoY = 26
       }
-      photoColumn = i % 2
-      if (i % 2 === 0 && i % 6 !== 0) photoY += 76
-      const x = 18 + photoColumn * 92
+      if (i > 0 && i % 2 === 0 && i % 6 !== 0) photoY += 76
+      const x = 18 + (i % 2) * 92
       try {
-        pdf.addImage(photos[i], photos[i].startsWith('data:image/png') ? 'PNG' : photos[i].startsWith('data:image/webp') ? 'WEBP' : 'JPEG', x, photoY, 80, 62, undefined, 'FAST')
+        const format = photos[i].startsWith('data:image/png') ? 'PNG' : photos[i].startsWith('data:image/webp') ? 'WEBP' : 'JPEG'
+        pdf.addImage(photos[i], format, x, photoY, 80, 62, undefined, 'FAST')
         pdf.setFontSize(9)
         pdf.text(`Fotografía ${i + 1}`, x, photoY + 67)
-      } catch (error) {
-        console.warn('[Cotización PDF] No se pudo incluir una imagen:', error)
+      } catch {
+        // El almacenamiento mantiene el original aunque el PDF no pueda dibujarlo.
         pdf.text(`Fotografía ${i + 1}: archivo conservado en el expediente`, x, photoY + 10, { maxWidth: 80 })
       }
     }
   }
+
   return Buffer.from(pdf.output('arraybuffer'))
 }
 
-async function upsertProspect(state: QuoteSessionState, quoteId: string, quote: Awaited<ReturnType<typeof calculate>>) {
-  const email = state.personalInfo.email!.toLowerCase().trim()
-  const rawKey = `${email}|${state.schedule.date || ''}|${addressText(state.origin.address)}|${addressText(state.destination.address)}|`
-  const leadKey = crypto.createHash('md5').update(rawKey).digest('hex')
-  const { data, error } = await supabaseAdmin
-    .from('quote_prospects')
-    .upsert({
-      source: 'whatsapp',
-      quote_id: quoteId,
-      name: state.personalInfo.name!,
-      email,
-      phone: state.personalInfo.phone,
-      is_company: state.personalInfo.isCompany,
-      company_name: state.personalInfo.isCompany ? state.personalInfo.companyName : null,
-      company_rut: state.personalInfo.isCompany ? state.personalInfo.companyRut : null,
-      origin_address: addressText(state.origin.address),
-      destination_address: addressText(state.destination.address),
-      origin_floor: state.origin.details.floor,
-      origin_has_elevator: state.origin.details.hasElevator,
-      origin_parking_distance: state.origin.details.parkingDistance,
-      destination_floor: state.destination.details.floor,
-      destination_has_elevator: state.destination.details.hasElevator,
-      destination_parking_distance: state.destination.details.parkingDistance,
-      scheduled_date: state.schedule.date,
-      scheduled_time: state.schedule.time,
-      total_price: quote.estimatedPrice,
-      original_price: quote.estimatedPrice,
-      is_flexible: state.schedule.isFlexible,
-      recommended_vehicle: quote.recommendedVehicle,
-      total_volume: quote.totalVolume,
-      total_weight: quote.totalWeight,
-      total_distance: quote.totalDistance,
-      items_summary: quote.items.map((item) => ({ name: item.name, quantity: item.quantity, volume: item.volume })),
-      additional_services: { ...state.additionalServices, taxDocument: state.taxDocument || null },
-      lead_key: leadKey,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'lead_key', ignoreDuplicates: false })
-    .select('id')
-    .single()
-  if (error || !data) throw new Error(error?.message || 'No se pudo guardar el prospecto')
-  return data.id as string
+/**
+ * El prospecto se guarda por `upsertQuoteProspect`, la misma función de la web y del panel:
+ * misma identidad por correo, mismo `lead_key`, mismos campos. Solo cambia el origen.
+ */
+async function upsertProspect(state: QuoteSessionState, quoteId: string, quote: Awaited<ReturnType<typeof calculateSessionQuote>>) {
+  const { prospect } = await upsertQuoteProspect({
+    source: 'whatsapp',
+    quote_id: quoteId,
+    name: state.personalInfo.name,
+    email: state.personalInfo.email,
+    phone: state.personalInfo.phone,
+    is_company: state.personalInfo.isCompany,
+    company_name: state.personalInfo.companyName,
+    company_rut: state.personalInfo.companyRut,
+    // Igual que la web: calle, número, comuna y región, sin el país.
+    origin_address: addressText(state.origin.address).replace(/, Chile$/, ''),
+    destination_address: addressText(state.destination.address).replace(/, Chile$/, ''),
+    origin_floor: state.origin.details.floor,
+    origin_has_elevator: state.origin.details.hasElevator,
+    origin_parking_distance: state.origin.details.parkingDistance,
+    destination_floor: state.destination.details.floor,
+    destination_has_elevator: state.destination.details.hasElevator,
+    destination_parking_distance: state.destination.details.parkingDistance,
+    scheduled_date: state.schedule.date,
+    scheduled_time: state.schedule.time,
+    total_price: quote.estimatedPrice,
+    original_price: state.schedule.isFlexible ? Math.round(quote.estimatedPrice / 0.9) : quote.estimatedPrice,
+    is_flexible: state.schedule.isFlexible,
+    recommended_vehicle: quote.recommendedVehicle,
+    total_volume: quote.totalVolume,
+    total_weight: quote.totalWeight,
+    total_distance: quote.totalDistance,
+    items_summary: quote.items.map((item) => ({
+      name: item.name,
+      quantity: item.quantity,
+      volume: parseFloat((item.volume * item.quantity).toFixed(2)),
+    })),
+    additional_services: {
+      disassembly: state.additionalServices.disassembly,
+      assembly: state.additionalServices.assembly,
+      packing: state.additionalServices.packing,
+      unpacking: state.additionalServices.unpacking,
+      observations: state.additionalServices.observations === '__pending__' ? '' : state.additionalServices.observations,
+      extraHelpers: 0,
+      requiredCrew: quote.requiredCrew,
+      totalCrew: quote.totalCrew,
+    },
+  })
+  return prospect.id as string
 }
 
 async function uploadPdf(buffer: Buffer, prospectId: string, quoteId: string) {
@@ -354,7 +293,7 @@ export async function generateQuoteFromSession(session: QuoteSessionRow): Promis
     throw new Error('La sesión todavía no tiene los datos mínimos para cotizar')
   }
 
-  const quote = await calculate(state)
+  const quote = await calculateSessionQuote(state)
   const quoteId = session.quote_id || `YME-WA-${Date.now().toString(36).toUpperCase()}`
   const prospectId = await upsertProspect(state, quoteId, quote)
   const photoPaths = (state.inventoryPhotos || []).filter((photo) => photo.storagePath).map((photo) => photo.storagePath!)
@@ -378,5 +317,6 @@ export async function generateQuoteFromSession(session: QuoteSessionRow): Promis
     })
     .eq('id', session.id)
 
-  return { quoteId, prospectId, pdfUrl, pdfFileName: fileName, ...quote }
+  // Meta descarga el PDF desde este enlace: va por el dominio del sitio, no por el almacenamiento.
+  return { quoteId, prospectId, pdfUrl: toHiddenFileUrl(pdfUrl, siteBaseUrl() || 'https://yomeencargo.cl'), pdfFileName: fileName, ...quote }
 }

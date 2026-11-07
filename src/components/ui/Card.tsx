@@ -16,6 +16,7 @@ const Card = forwardRef<HTMLDivElement, CardProps>(
     return (
       <div
         className={cn('rounded-xl p-6', variants[variant], className)}
+        data-ui="card"
         ref={ref}
         {...props}
       >

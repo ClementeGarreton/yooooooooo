@@ -1,6 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
 import { resolveBookingAttribution } from '@/lib/attributionServer'
+import { getActiveCapacity } from '@/lib/fleetCapacity'
+
+function chileDate() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Santiago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date())
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -27,11 +37,60 @@ export async function POST(request: NextRequest) {
       !client_email ||
       !client_phone ||
       !visit_address ||
-      !total_price
+      !total_price ||
+      !scheduled_date ||
+      !scheduled_time
     ) {
+      return NextResponse.json({ error: 'Datos incompletos' }, { status: 400 })
+    }
+
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(String(scheduled_date)) ||
+      !/^\d{2}:\d{2}(?::\d{2})?$/.test(String(scheduled_time))
+    ) {
+      return NextResponse.json({ error: 'Fecha u hora inválida' }, { status: 400 })
+    }
+
+    if (String(scheduled_date) <= chileDate()) {
       return NextResponse.json(
-        { error: 'Datos incompletos' },
+        { error: 'La visita debe reservarse desde mañana' },
         { status: 400 }
+      )
+    }
+
+    // Volver a comprobar el cupo al guardar evita tomar un horario que otra persona
+    // acaba de reservar después de que el cliente abrió el selector.
+    const [{ data: configData, error: configError }, { count: bookingCount }, { data: blockedData }] =
+      await Promise.all([
+        supabaseAdmin.from('fleet_config').select('*').single(),
+        supabaseAdmin
+          .from('bookings')
+          .select('id', { count: 'exact', head: true })
+          .eq('scheduled_date', scheduled_date)
+          .eq('scheduled_time', scheduled_time)
+          .in('status', ['confirmed', 'pending']),
+        supabaseAdmin
+          .from('blocked_slots')
+          .select('id')
+          .eq('date', scheduled_date)
+          .lte('start_time', scheduled_time)
+          .gt('end_time', scheduled_time),
+      ])
+
+    if (configError || !configData) {
+      return NextResponse.json(
+        { error: 'No pudimos comprobar la disponibilidad del horario' },
+        { status: 500 }
+      )
+    }
+
+    const capacity = getActiveCapacity(configData)
+    const activeBookings = bookingCount || 0
+    const isBlocked = !!blockedData?.length
+    if (activeBookings >= capacity || isBlocked) {
+      return NextResponse.json(
+        { error: 'Ese horario acaba de quedar sin disponibilidad. Elige otro horario.' },
+        { status: 409 }
       )
     }
 
@@ -45,7 +104,7 @@ export async function POST(request: NextRequest) {
       .insert({
         quote_id,
         client_name,
-        client_email,
+        client_email: String(client_email).trim().toLowerCase(),
         client_phone,
         booking_type,
         visit_address,
@@ -53,9 +112,8 @@ export async function POST(request: NextRequest) {
         original_price: original_price || total_price,
         status: 'pending',
         payment_status: 'pending',
-        // Campos dummy para compatibilidad con la estructura actual
-        scheduled_date: scheduled_date || new Date().toISOString().split('T')[0],
-        scheduled_time: scheduled_time || '09:00',
+        scheduled_date,
+        scheduled_time,
         duration_hours: duration_hours || 1,
         ...attribution,
       })

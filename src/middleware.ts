@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 import { verifySessionToken } from '@/lib/adminSession'
+import { ADMIN_PREVIEW_COOKIE } from '@/lib/adminPreview'
+import { canCallRoute, modulesForRoute } from '@/lib/adminAccess'
+import { getAccessForMiddleware } from '@/lib/adminAccessEdge'
 import {
   checkRateLimit,
   findRateLimitRule,
@@ -63,6 +66,27 @@ export async function middleware(request: NextRequest) {
   const limited = enforceRateLimit(request, pathname)
   if (limited) return limited
 
+  // 1b) Vista de administrador («Ver como», adminPreview.ts): es SOLO LECTURA. Mientras el
+  // navegador tenga esa cookie, ninguna ruta del panel del cliente ni del trabajador
+  // responde: no se paga, no se reprograma, no se sube ni se registra nada, ni a nombre de
+  // la persona que se está mirando ni con la sesión propia que el admin pueda tener abierta.
+  // Basta la presencia de la cookie (no se valida la firma): ante la duda, se bloquea.
+  // Única excepción: ABRIR un archivo del trabajador que se está mirando (GET, no cambia
+  // nada). Sin ella el administrador bajaba un JSON de error con nombre de foto y lo veía
+  // como «archivo dañado». La ruta comprueba la vista y a quién pertenece el archivo.
+  const previewFileRead =
+    (request.method === 'GET' || request.method === 'HEAD') && /^\/api\/trabajos\/documentos\/[0-9a-f-]{36}$/i.test(pathname)
+  if (
+    request.cookies.get(ADMIN_PREVIEW_COOKIE)?.value &&
+    !previewFileRead &&
+    (pathname.startsWith('/api/cuenta/') || pathname.startsWith('/api/trabajos/'))
+  ) {
+    return NextResponse.json(
+      { error: 'Estás en la vista de administrador, que es solo lectura. Sal de la vista para hacer cambios.' },
+      { status: 403 }
+    )
+  }
+
   // 2) Autenticación de admin.
   const isAdminPage = pathname.startsWith('/admin')
   const isAdminApi = pathname.startsWith('/api/admin')
@@ -79,8 +103,9 @@ export async function middleware(request: NextRequest) {
   if (pathname === '/api/admin/auth/login' || pathname === '/api/admin/auth/logout') {
     return NextResponse.next()
   }
-  // Cron de Vercel (definido en vercel.json). Debería auto-protegerse con CRON_SECRET.
-  if (pathname === '/api/admin/cleanup-bookings') return NextResponse.next()
+  // Cron de Vercel (vercel.json): el GET se protege solo con CRON_SECRET. El POST es el disparo
+  // manual y exige sesión de admin; antes cualquiera podía lanzar la limpieza.
+  if (pathname === '/api/admin/cleanup-bookings' && request.method === 'GET') return NextResponse.next()
   // Lectura pública del catálogo/precios/agenda que consume el cotizador (solo GET).
   if (request.method === 'GET' && PUBLIC_ADMIN_READ_APIS.has(pathname)) {
     return NextResponse.next()
@@ -95,6 +120,19 @@ export async function middleware(request: NextRequest) {
     }
     const loginUrl = new URL('/admin/login', request.url)
     return NextResponse.redirect(loginUrl)
+  }
+
+  // 3) Candado por módulo: una ruta de un módulo que el perfil del usuario tiene apagado
+  // responde 403 aunque se llame a mano (ver adminAccess.ts). Solo se consulta el perfil
+  // cuando la ruta tiene candado. Si el perfil no se puede resolver, se deja pasar.
+  if (isAdminApi && modulesForRoute(pathname, request.method)) {
+    const access = await getAccessForMiddleware(actor.id)
+    if (access && !canCallRoute(access, pathname, request.method)) {
+      return NextResponse.json(
+        { error: 'Tu perfil no tiene acceso a este módulo. Pídele a un administrador que lo active.' },
+        { status: 403 }
+      )
+    }
   }
 
   // Propagamos la identidad a los route handlers para el log de auditoría.

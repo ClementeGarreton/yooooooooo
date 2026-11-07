@@ -2,10 +2,10 @@
 
 import { Truck, Clock, Shield, DollarSign, CheckCircle, TrendingDown, Home } from 'lucide-react'
 import { useRouter } from 'next/navigation'
-import { useEffect, useState } from 'react'
-import { getPricingConfig } from '@/lib/pricingService'
 import Button from '../ui/Button'
 import Card from '../ui/Card'
+import { formatHomeVisitPrice } from '@/lib/homeVisitPricing'
+import { useHomeVisitPrice } from '@/lib/useHomeVisitPrice'
 
 interface WelcomeScreenProps {
   onNext: () => void
@@ -13,11 +13,7 @@ interface WelcomeScreenProps {
 
 export default function WelcomeScreen({ onNext }: WelcomeScreenProps) {
   const router = useRouter()
-  const [homeQuotePrice, setHomeQuotePrice] = useState(80000)
-
-  useEffect(() => {
-    getPricingConfig().then((pricing) => setHomeQuotePrice(pricing.homeQuotePrice || 80000)).catch(() => {})
-  }, [])
+  const homeVisitPrice = useHomeVisitPrice()
 
   return (
     <div className="max-w-6xl mx-auto">
@@ -75,10 +71,9 @@ export default function WelcomeScreen({ onNext }: WelcomeScreenProps) {
                 <Home className="w-10 h-10 text-secondary-600" />
               </div>
               <h3 className="text-2xl font-bold mb-3">Cotización a Domicilio</h3>
-              <p className="text-gray-600 mb-2 min-h-[3rem]">
+              <p className="text-gray-600 mb-4 min-h-[3rem]">
                 Te visitamos para evaluar tu mudanza en persona
               </p>
-              <p className="text-xl font-black text-secondary-700 mb-4">IDEAL PARA MUDANZAS GRANDES</p>
               <ul className="text-sm text-gray-600 mb-4 space-y-2 text-left">
                 <li className="flex items-center gap-2">
                   <CheckCircle className="w-4 h-4 text-green-600 flex-shrink-0" />
@@ -90,12 +85,12 @@ export default function WelcomeScreen({ onNext }: WelcomeScreenProps) {
                 </li>
                 <li className="flex items-center gap-2">
                   <CheckCircle className="w-4 h-4 text-green-600 flex-shrink-0" />
-                  <span><strong>{`$${homeQuotePrice.toLocaleString('es-CL')}`}</strong> - Solo RM</span>
+                  <span><strong>{formatHomeVisitPrice(homeVisitPrice)}</strong> - Solo RM</span>
                 </li>
               </ul>
               <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 mb-6 text-left">
                 <p className="text-xs text-blue-800">
-                  💡 <strong>¿Contratas después?</strong> Los {`$${homeQuotePrice.toLocaleString('es-CL')}`} se descuentan del valor total de tu mudanza o flete.
+                  💡 <strong>¿Contratas después?</strong> Los {formatHomeVisitPrice(homeVisitPrice)} se descuentan del valor total de tu mudanza o flete.
                 </p>
               </div>
               <Button

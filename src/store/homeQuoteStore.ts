@@ -15,14 +15,21 @@ export interface HomeQuoteAddress {
   additionalInfo?: string
 }
 
+export interface HomeQuoteSchedule {
+  date: string
+  time: string
+}
+
 export interface HomeQuoteState {
   personalInfo: HomeQuotePersonalInfo | null
   visitAddress: HomeQuoteAddress | null
+  visitSchedule: HomeQuoteSchedule | null
   isConfirmed: boolean
 
   // Actions
   setPersonalInfo: (info: HomeQuotePersonalInfo) => void
   setVisitAddress: (address: HomeQuoteAddress) => void
+  setVisitSchedule: (schedule: HomeQuoteSchedule) => void
   setConfirmed: (confirmed: boolean) => void
   resetQuote: () => void
 }
@@ -30,6 +37,7 @@ export interface HomeQuoteState {
 const initialState = {
   personalInfo: null,
   visitAddress: null,
+  visitSchedule: null,
   isConfirmed: false,
 }
 
@@ -41,6 +49,8 @@ export const useHomeQuoteStore = create<HomeQuoteState>()(
       setPersonalInfo: (info) => set({ personalInfo: info }),
 
       setVisitAddress: (address) => set({ visitAddress: address }),
+
+      setVisitSchedule: (schedule) => set({ visitSchedule: schedule }),
 
       setConfirmed: (confirmed) => set({ isConfirmed: confirmed }),
 

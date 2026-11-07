@@ -12,6 +12,9 @@ interface AdminUser {
   id: string
   username: string
   display_name: string
+  role: 'administrator' | 'staff'
+  /** Perfil con permisos. null/undefined antes de correr add_admin_profiles.sql. */
+  profile_id?: string | null
   is_active: boolean
   must_change_password: boolean
   created_at: string
@@ -34,11 +37,20 @@ function fmtDateTime(iso: string | null) {
 
 export default function UsersManagement() {
   const [users, setUsers] = useState<AdminUser[]>([])
+  // Perfiles con permisos. Vacío = todavía no existen (falta la migración): la pantalla
+  // sigue ofreciendo los dos roles de siempre.
+  const [profiles, setProfiles] = useState<{ id: string; name: string }[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
   const [showCreate, setShowCreate] = useState(false)
-  const [newUser, setNewUser] = useState({ username: '', displayName: '', password: '' })
+  const [newUser, setNewUser] = useState({
+    username: '',
+    displayName: '',
+    password: '',
+    role: 'staff' as 'administrator' | 'staff',
+    profileId: '',
+  })
 
   const [resetTarget, setResetTarget] = useState<AdminUser | null>(null)
   const [resetPassword, setResetPassword] = useState('')
@@ -49,6 +61,9 @@ export default function UsersManagement() {
       const res = await fetch('/api/admin/users')
       if (!res.ok) throw new Error('Error al cargar')
       setUsers(await res.json())
+      const profilesRes = await fetch('/api/admin/profiles')
+      const profilesData = profilesRes.ok ? await profilesRes.json().catch(() => ({})) : {}
+      setProfiles(Array.isArray(profilesData.profiles) ? profilesData.profiles : [])
     } catch (error) {
       console.error('Error cargando usuarios:', error)
       toast.error('No se pudieron cargar los usuarios')
@@ -76,14 +91,21 @@ export default function UsersManagement() {
       const res = await fetch('/api/admin/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newUser),
+        body: JSON.stringify({
+          ...newUser,
+          // Lo que muestra el selector cuando nadie lo tocó: Secretaría, o el primero.
+          profileId:
+            profiles.length > 0
+              ? newUser.profileId || profiles.find((p) => p.name === 'Secretaría')?.id || profiles[0].id
+              : undefined,
+        }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data?.error || 'No se pudo crear')
 
       toast.success('Usuario creado. Deberá cambiar la contraseña al entrar.')
       setShowCreate(false)
-      setNewUser({ username: '', displayName: '', password: '' })
+      setNewUser({ username: '', displayName: '', password: '', role: 'staff', profileId: '' })
       fetchUsers()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'No se pudo crear el usuario')
@@ -106,6 +128,40 @@ export default function UsersManagement() {
       fetchUsers()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'No se pudo actualizar')
+    }
+  }
+
+  const updateProfile = async (user: AdminUser, profileId: string) => {
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: user.id, profileId }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'No se pudo cambiar el perfil')
+
+      toast.success('Perfil actualizado')
+      fetchUsers()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'No se pudo cambiar el perfil')
+    }
+  }
+
+  const updateRole = async (user: AdminUser, role: AdminUser['role']) => {
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: user.id, role }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'No se pudo cambiar el perfil')
+
+      toast.success('Perfil actualizado')
+      fetchUsers()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'No se pudo cambiar el perfil')
     }
   }
 
@@ -141,7 +197,7 @@ export default function UsersManagement() {
         <div>
           <h3 className="text-lg font-semibold text-gray-900">Usuarios del panel</h3>
           <p className="text-sm text-gray-600">
-            Todos tienen los mismos permisos. Sus acciones quedan registradas en Actividad.
+            Administrador puede gestionar usuarios y reajustar montos; Secretaría mantiene la operación diaria.
           </p>
         </div>
         <Button onClick={() => setShowCreate(true)} variant="outline" size="sm">
@@ -169,6 +225,9 @@ export default function UsersManagement() {
                     Último ingreso
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Perfil
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Estado
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -185,6 +244,35 @@ export default function UsersManagement() {
                     </td>
                     <td className="hidden sm:table-cell px-4 py-3 align-top text-sm text-gray-600">
                       {fmtDateTime(u.last_login_at)}
+                    </td>
+                    <td className="px-4 py-3 align-top">
+                      {profiles.length > 0 ? (
+                        <select
+                          value={u.profile_id || ''}
+                          onChange={(e) => e.target.value && updateProfile(u, e.target.value)}
+                          className="rounded-md border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                          aria-label={`Perfil de ${u.display_name}`}
+                        >
+                          {!u.profile_id && <option value="">Sin perfil ({u.role === 'administrator' ? 'Administrador' : 'Secretaría'})</option>}
+                          {profiles.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <select
+                          value={u.role}
+                          onChange={(e) =>
+                            updateRole(u, e.target.value as AdminUser['role'])
+                          }
+                          className="rounded-md border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                          aria-label={`Perfil de ${u.display_name}`}
+                        >
+                          <option value="staff">Secretaría</option>
+                          <option value="administrator">Administrador</option>
+                        </select>
+                      )}
                     </td>
                     <td className="px-4 py-3 align-top">
                       <div className="flex flex-col gap-1">
@@ -251,7 +339,8 @@ export default function UsersManagement() {
         <div className="text-sm text-blue-900">
           Los usuarios se <strong>desactivan</strong>, no se borran: así el historial de
           Actividad sigue mostrando quién hizo cada cosa. Toda contraseña creada o reseteada
-          desde aquí es temporal y su titular debe cambiarla al entrar.
+          desde aquí es temporal y su titular debe cambiarla al entrar. Solo el perfil
+          <strong> Administrador</strong> puede modificar montos después de un abono.
         </div>
       </div>
 
@@ -294,6 +383,36 @@ export default function UsersManagement() {
               Se la compartes a la persona por un canal seguro. Al entrar, el sistema la
               obliga a cambiarla.
             </p>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Perfil</label>
+            {profiles.length > 0 ? (
+              <select
+                value={newUser.profileId || profiles.find((p) => p.name === 'Secretaría')?.id || profiles[0].id}
+                onChange={(e) => setNewUser({ ...newUser, profileId: e.target.value })}
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-200"
+              >
+                {profiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <select
+                value={newUser.role}
+                onChange={(e) =>
+                  setNewUser({
+                    ...newUser,
+                    role: e.target.value as 'administrator' | 'staff',
+                  })
+                }
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-200"
+              >
+                <option value="staff">Secretaría</option>
+                <option value="administrator">Administrador</option>
+              </select>
+            )}
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={() => setShowCreate(false)} disabled={saving}>

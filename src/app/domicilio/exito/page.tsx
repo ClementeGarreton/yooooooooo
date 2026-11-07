@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, useEffect, useState } from 'react'
+import { Suspense, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import Card from '@/components/ui/Card'
@@ -8,8 +8,8 @@ import Button from '@/components/ui/Button'
 import { CheckCircle, Home, Loader2, Download } from 'lucide-react'
 import { formatCurrency } from '@/lib/utils'
 import { generateHomePDF } from '@/lib/homePdfGenerator'
+import { useHomeVisitPrice } from '@/lib/useHomeVisitPrice'
 import toast from 'react-hot-toast'
-import WhatsAppHandoff from '@/components/ui/WhatsAppHandoff'
 
 function PaymentSuccessContent() {
     const searchParams = useSearchParams()
@@ -23,20 +23,22 @@ function PaymentSuccessContent() {
         visitAddress: '',
     })
     const [isDownloading, setIsDownloading] = useState(false)
+    const pdfAttempted = useRef(false)
     const [isPdfUploaded, setIsPdfUploaded] = useState(false)
     const [isUploadingPdf, setIsUploadingPdf] = useState(false)
+    const homeVisitPrice = useHomeVisitPrice()
 
     useEffect(() => {
         setPaymentInfo({
             token: searchParams.get('token') || '',
             order: searchParams.get('order') || '',
-            amount: searchParams.get('amount') || '80000',
+            amount: searchParams.get('amount') || String(homeVisitPrice),
             bookingId: searchParams.get('bookingId') || '',
             clientName: searchParams.get('clientName') || '',
             clientEmail: searchParams.get('clientEmail') || '',
             visitAddress: searchParams.get('visitAddress') || '',
         })
-    }, [searchParams])
+    }, [searchParams, homeVisitPrice])
 
     // Subir PDF automáticamente cuando se carga la página
     useEffect(() => {
@@ -55,6 +57,9 @@ function PaymentSuccessContent() {
                 })
                 return
             }
+            // Un solo intento: al fallar, `isUploadingPdf` volvía a false y este efecto seguía subiendo.
+            if (pdfAttempted.current) return
+            pdfAttempted.current = true
 
             try {
                 setIsUploadingPdf(true)
@@ -192,24 +197,6 @@ function PaymentSuccessContent() {
                         </div>
                     )}
 
-                    {/* WhatsApp: siguiente paso prioritario */}
-                    <div className="mb-8">
-                        <WhatsAppHandoff
-                            message={[
-                                'Hola, acabo de pagar una cotización a domicilio en Yo Me Encargo y quiero afinar los detalles de la visita con un EJECUTIVO.',
-                                paymentInfo.clientName ? `Nombre: ${paymentInfo.clientName}` : '',
-                                paymentInfo.order ? `Orden Flow: #${paymentInfo.order}` : '',
-                                paymentInfo.amount ? `Monto pagado: ${formatCurrency(parseInt(paymentInfo.amount))}` : '',
-                                paymentInfo.visitAddress ? `Dirección de visita: ${paymentInfo.visitAddress}` : '',
-                            ].filter(Boolean).join('\n')}
-                            label="AFINAR DETALLES CON NUESTRO EJECUTIVO"
-                            headline="AFINA LOS DETALLES DE TU MUDANZA CON NUESTRO EJECUTIVO"
-                            helper="Tu pago ya está registrado. Deja este mensaje para que tu visita quede identificada en nuestro WhatsApp y podamos coordinar cada detalle sin pérdidas de información ni cambios de último minuto."
-                            location="home_quote_payment_handoff"
-                            strong
-                        />
-                    </div>
-
                     {/* Próximos pasos */}
                     <div className="bg-gradient-to-r from-purple-50 to-purple-50 border border-purple-200 rounded-lg p-6 mb-8">
                         <h3 className="font-semibold mb-3 text-purple-900">📧 ¿Qué sigue?</h3>
@@ -220,7 +207,7 @@ function PaymentSuccessContent() {
                             </li>
                             <li className="flex items-start gap-2">
                                 <span className="text-green-600 mt-0.5">✅</span>
-                                <span>Afina la fecha y hora de la visita con nuestro ejecutivo por WhatsApp</span>
+                                <span>Te contactaremos para coordinar la fecha y hora de la visita</span>
                             </li>
                             <li className="flex items-start gap-2">
                                 <span className="text-green-600 mt-0.5">✅</span>
@@ -235,8 +222,6 @@ function PaymentSuccessContent() {
 
                     {/* Acciones */}
                     <div className="space-y-6">
-
-
                         <Button 
                             variant="primary" 
                             className="w-full bg-purple-600 hover:bg-purple-700" 
@@ -271,7 +256,7 @@ function PaymentSuccessContent() {
                             ¿Necesitas ayuda? Contáctanos:
                         </p>
                         <p className="text-sm font-semibold text-purple-600">
-                            📞 +56 9 5439 0267 | 📧 contacto@yomeencargo.cl
+                            📞 +56 9 5233 4799 | 📧 contacto@yomeencargo.cl
                         </p>
                     </div>
                 </Card>

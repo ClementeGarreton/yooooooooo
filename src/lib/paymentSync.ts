@@ -1,6 +1,8 @@
 import { supabaseAdmin } from '@/lib/supabase'
 import { flowService, type FlowPaymentStatus } from '@/lib/flowService'
-import { postQuoteWebhook } from '@/lib/n8nClient'
+import { sendSystemEmail } from '@/lib/emailTransport'
+import { sendBookingConfirmed } from '@/lib/transactionalEmails'
+import { recordPayment, type PaymentKind } from '@/lib/bookingPayments'
 
 /**
  * Datos mínimos de la reserva que necesitan los endpoints de pago para redirigir
@@ -13,6 +15,7 @@ export interface SyncedBookingData {
   client_email?: string | null
   visit_address?: string | null
   payment_status?: string | null
+  amount_paid?: number | null
 }
 
 export interface ApplyFlowPaymentResult {
@@ -93,7 +96,7 @@ async function applyFlowPaymentStatus(
   // Leer la reserva ANTES de actualizar: sirve para idempotencia y para redirigir/convertir.
   const { data: existing } = await supabaseAdmin
     .from('bookings')
-    .select('id, booking_type, client_name, client_email, visit_address, payment_status')
+    .select('id, booking_type, client_name, client_email, visit_address, payment_status, amount_paid')
     .eq('quote_id', bookingRef)
     .maybeSingle()
 
@@ -108,6 +111,20 @@ async function applyFlowPaymentStatus(
     console.warn(
       `[paymentSync] Ignorada notificación tardía (status=${paymentStatus.status}) sobre ` +
         `reserva ${bookingRef} ya aprobada. No se degrada.`
+    )
+    return { paymentStatus, bookingData, bookingRef, alreadyProcessed: true }
+  }
+
+  // Un cobro de SALDO que no se aprobó (rechazado, anulado o pendiente) no dice nada de la
+  // reserva: la mudanza sigue en pie con lo que ya tenía. El guard de arriba solo cubre las
+  // reservas con un pago aprobado; sin este, un cliente que abría el link del saldo de una
+  // reserva confirmada SIN pago previo (cargada a mano, se paga al final) y lo anulaba en
+  // Flow dejaba la reserva 'cancelled' y 'rejected'. Medido el 01-10-2026: 3 de las 6
+  // reservas futuras con precio estaban confirmadas sin pago aprobado.
+  if (optionalPaymentType === 'saldo' && paymentStatus.status !== 2) {
+    console.warn(
+      `[paymentSync] Cobro de saldo no aprobado (status=${paymentStatus.status}) sobre ` +
+        `reserva ${bookingRef}. La reserva no se toca.`
     )
     return { paymentStatus, bookingData, bookingRef, alreadyProcessed: true }
   }
@@ -128,6 +145,11 @@ async function applyFlowPaymentStatus(
   // commerceOrder es null y no debemos pisar el flow_token previo con null.
   if (token) updateData.flow_token = token
 
+  // Un cobro del SALDO se marca así al crear la orden en Flow (ver
+  // /api/admin/bookings/[id]/payment-link). Es el único caso en que una reserva ya
+  // aprobada recibe plata nueva, y hay que sumarla en vez de ignorarla.
+  const isBalancePayment = optionalPaymentType === 'saldo'
+
   if (paymentStatus.status === 2) {
     updateData.status = 'confirmed'
     // Deja de ser provisional => ahora SÍ consume cupo de flota.
@@ -136,7 +158,56 @@ async function applyFlowPaymentStatus(
     // no el monto pagado. paymentStatus.amount es el 50% (abono) o el 95% (pago completo con
     // descuento); pisarlo con ese valor dejaba la reserva registrada a mitad/95% de su precio
     // real y descuadraba la contabilidad y los PDF regenerados.
-    if (optionalPaymentType) updateData.payment_type = optionalPaymentType
+    //
+    // 'saldo' NO es una modalidad de pago, es un segundo cobro: si se guardara en
+    // payment_type, `paidRatio()` dejaría de reconocer 'mitad'/'completo' y el cálculo de
+    // lo pendiente se rompería para siempre en esa reserva.
+    if (optionalPaymentType && !isBalancePayment) updateData.payment_type = optionalPaymentType
+
+    const cobrado = Math.round(Number(paymentStatus.amount) || 0)
+
+    // Todo cobro aprobado queda anotado en el libro. El token de Flow es la clave de
+    // idempotencia: si ya estaba, `recorded` viene en false y no se suma nada.
+    let kind: PaymentKind = 'abono'
+    if (isBalancePayment) kind = 'saldo'
+    else if (optionalPaymentType === 'completo') kind = 'completo'
+
+    const ledger =
+      cobrado > 0
+        ? await recordPayment({
+            bookingId: bookingData?.id || null,
+            quoteId: bookingRef,
+            flowToken: token,
+            flowOrder: paymentStatus.flowOrder ?? null,
+            amount: cobrado,
+            kind,
+            paidAt: paymentStatus.paymentData?.date || null,
+          })
+        : { recorded: false, ledgerAvailable: true }
+
+    if (isBalancePayment) {
+      // SUMA sobre lo que ya había. Solo si el libro confirmó que este cobro es nuevo:
+      // sin esa confirmación (reintento del webhook, retorno del navegador con el mismo
+      // token, o libro no disponible) sumar de nuevo cobraría dos veces el mismo saldo.
+      if (ledger.recorded) {
+        updateData.amount_paid = Math.max(0, Number(bookingData?.amount_paid) || 0) + cobrado
+      } else {
+        console.warn(
+          `[paymentSync] Pago de saldo de ${bookingRef} NO sumado: ` +
+            (ledger.ledgerAvailable
+              ? 'ya estaba registrado (reintento).'
+              : 'falta la tabla booking_payments.')
+        )
+      }
+    } else if (
+      !alreadyApproved &&
+      (Number(bookingData?.amount_paid) || 0) <= 0 &&
+      cobrado > 0
+    ) {
+      // Primer cobro: se registra solo si todavía no había un monto explícito, para que
+      // un reajuste manual posterior no sea pisado por un webhook duplicado o tardío.
+      updateData.amount_paid = cobrado
+    }
   } else if (paymentStatus.status === 3 || paymentStatus.status === 4) {
     updateData.status = 'cancelled'
   }
@@ -163,6 +234,15 @@ async function applyFlowPaymentStatus(
       amount: paymentStatus.amount || null,
       paymentType: optionalPaymentType || null,
     })
+    // #05 al CLIENTE. Best-effort igual que el aviso interno: si el correo falla, el
+    // pago ya está aplicado y no se revierte — el cron lo reintenta como red de
+    // seguridad dentro de las 24 h. Doble idempotencia: `alreadyProcessed` evita
+    // repetirlo acá, y la clave de `email_log` lo evita venga por donde venga.
+    try {
+      await sendBookingConfirmed(bookingData.id)
+    } catch (mailErr) {
+      console.error('[paymentSync] Error enviando la confirmación al cliente:', mailErr)
+    }
   }
 
   return { paymentStatus, bookingData, bookingRef, alreadyProcessed }
@@ -183,7 +263,7 @@ async function notifyAdminPaymentApproved(params: {
   const adminEmail = process.env.ADMIN_NOTIFICATION_EMAIL
   if (!adminEmail) return
 
-  await postQuoteWebhook(
+  await sendSystemEmail(
     {
       event: 'payment_approved',
       to: adminEmail,

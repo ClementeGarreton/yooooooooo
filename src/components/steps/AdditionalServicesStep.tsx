@@ -1,13 +1,17 @@
 'use client'
 
+import { toHiddenFileUrl } from '@/lib/fileLinks'
 import { useState, useEffect } from 'react'
 import { useQuoteStore } from '@/store/quoteStore'
 import { getAdditionalServices, AdditionalService } from '@/lib/additionalServicesService'
 import Button from '../ui/Button'
 import Checkbox from '../ui/Checkbox'
 import Card from '../ui/Card'
-import { Wrench, Package, Camera, FileText } from 'lucide-react'
+import { Wrench, Package, Camera, FileText, Users, Minus, Plus } from 'lucide-react'
 import toast from 'react-hot-toast'
+import { getPricingConfig } from '@/lib/pricingService'
+import { DEFAULT_CREW, requiredPeople, type CrewConfig } from '@/lib/crewPricing'
+import { hasFridge } from '@/lib/extraServices'
 
 interface AdditionalServicesStepProps {
   onNext: () => void
@@ -15,11 +19,12 @@ interface AdditionalServicesStepProps {
 }
 
 export default function AdditionalServicesStep({ onNext, onPrevious }: AdditionalServicesStepProps) {
-  const { additionalServices, setAdditionalServices, calculateTotals } = useQuoteStore()
+  const { additionalServices, setAdditionalServices, calculateTotals, items } = useQuoteStore()
 
   const [services, setServices] = useState<AdditionalService[]>([])
   const [loadingServices, setLoadingServices] = useState(true)
   const [isUploadingPhotos, setIsUploadingPhotos] = useState(false)
+  const [crewConfig, setCrewConfig] = useState<CrewConfig>(DEFAULT_CREW)
   const [formData, setFormData] = useState({
     disassembly: additionalServices.disassembly,
     assembly: additionalServices.assembly,
@@ -27,14 +32,55 @@ export default function AdditionalServicesStep({ onNext, onPrevious }: Additiona
     unpacking: additionalServices.unpacking,
     observations: additionalServices.observations,
     photos: additionalServices.photos,
+    extraHelpers: additionalServices.extraHelpers || 0,
+    // `?? false`: una cotización a medio hacer, guardada en localStorage antes de que
+    // existieran estos dos campos, los trae como undefined y dejaría el checkbox sin
+    // controlar.
+    fridgeDisassembly: additionalServices.fridgeDisassembly ?? false,
+    priority: additionalServices.priority ?? false,
+    stairsCarry: additionalServices.stairsCarry ?? false,
   })
+
+  // ¿Hay un refrigerador en la lista? De esto depende que el servicio se ofrezca.
+  const fridgePresent = hasFridge(items)
+
+  // Cuadrilla mínima que exige el bulto más pesado. Los ayudantes que elija el cliente
+  // van POR ENCIMA de esto, nunca lo reemplazan.
+  const crewByWeight = requiredPeople(items, crewConfig)
+  const maxExtraHelpers = Math.max(0, crewConfig.maxPeople - crewByWeight)
+  const helpersCost =
+    Math.max(0, crewByWeight + formData.extraHelpers - crewConfig.includedPeople) *
+    crewConfig.pricePerExtraPerson
+
+  useEffect(() => {
+    getPricingConfig()
+      .then((config) => setCrewConfig(config.crew || DEFAULT_CREW))
+      .catch(() => setCrewConfig(DEFAULT_CREW))
+  }, [])
+
+  // Si baja el peso de la carga, el tope de ayudantes baja con él: hay que recortar la
+  // selección para no cotizar más gente de la que cabe en el servicio.
+  useEffect(() => {
+    setFormData((prev) =>
+      prev.extraHelpers > maxExtraHelpers ? { ...prev, extraHelpers: maxExtraHelpers } : prev
+    )
+  }, [maxExtraHelpers])
+
+  // Si el cliente vuelve atrás y saca el refrigerador de la lista, el desarmado deja de
+  // aplicar: se desmarca acá para que la pantalla no muestre un servicio cobrado que el
+  // cálculo ya descartó.
+  useEffect(() => {
+    if (!fridgePresent) {
+      setFormData((prev) => (prev.fridgeDisassembly ? { ...prev, fridgeDisassembly: false } : prev))
+    }
+  }, [fridgePresent])
 
   // Cargar servicios adicionales dinámicamente
   useEffect(() => {
     const loadAdditionalServices = async () => {
       try {
         setLoadingServices(true)
-        const servicesData = await getAdditionalServices()
+        const servicesData = await getAdditionalServices(items)
         setServices(servicesData)
       } catch (error) {
         console.error('Error loading additional services:', error)
@@ -44,7 +90,11 @@ export default function AdditionalServicesStep({ onNext, onPrevious }: Additiona
       }
     }
     loadAdditionalServices()
-  }, [])
+    // Depende de `fridgePresent` y no de `items`: el array de items es una referencia
+    // nueva en cada render y dispararía el efecto en bucle. Lo único que cambia la
+    // lista de servicios es que aparezca o desaparezca el refrigerador.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fridgePresent])
 
   const handleServiceToggle = (serviceId: string) => {
     setFormData({
@@ -175,6 +225,103 @@ export default function AdditionalServicesStep({ onNext, onPrevious }: Additiona
           </div>
         )}
 
+        {/* Bultos grandes por escalera: no todo cabe en el ascensor, y hay edificios sin
+            ascensor para carga. No cambia el precio; le avisa al equipo qué le espera. */}
+        <label
+          className={`mb-8 flex cursor-pointer items-start gap-3 rounded-lg border-2 p-4 transition-all hover:shadow-md ${
+            formData.stairsCarry ? 'border-primary-600 bg-primary-50' : 'border-gray-200 hover:border-primary-300'
+          }`}
+        >
+          <input
+            type="checkbox"
+            checked={formData.stairsCarry}
+            onChange={(e) => setFormData({ ...formData, stairsCarry: e.target.checked })}
+            className="mt-1 h-5 w-5 shrink-0 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+          <span className="flex-1">
+            <span className="block font-semibold text-gray-900">Hay muebles grandes que deben ir por la escalera</span>
+            <span className="mt-0.5 block text-sm text-gray-600">
+              Márcalo si algún mueble o bulto de gran tamaño no cabe en el ascensor y hay que subirlo o bajarlo por la
+              escalera, aunque el edificio tenga ascensor.
+            </span>
+            <span className="mt-1 block text-xs font-medium text-blue-600">
+              Así llevamos al equipo y el tiempo que ese traslado necesita.
+            </span>
+          </span>
+        </label>
+
+        {/* Cuadrilla: cuánta gente va y cuánta más se puede sumar */}
+        <div className="mb-8 rounded-lg border-2 border-gray-200 p-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-full bg-primary-600 flex items-center justify-center shrink-0">
+              <Users className="w-5 h-5 text-white" />
+            </div>
+            <div className="flex-1">
+              <h4 className="font-semibold">Personas para el traslado</h4>
+              <p className="text-sm text-gray-600">
+                Más personas es más rápido y con más cuidado en cada mueble.
+              </p>
+
+              {crewByWeight > crewConfig.includedPeople && (
+                <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  Tu carga incluye un artículo pesado, así que el servicio ya va con{' '}
+                  <strong>{crewByWeight} personas</strong>. Es obligatorio por seguridad.
+                </p>
+              )}
+
+              <div className="mt-4 flex items-center gap-4">
+                <button
+                  type="button"
+                  aria-label="Quitar un ayudante"
+                  onClick={() =>
+                    setFormData({ ...formData, extraHelpers: Math.max(0, formData.extraHelpers - 1) })
+                  }
+                  disabled={formData.extraHelpers <= 0}
+                  className="flex h-10 w-10 items-center justify-center rounded-full border-2 border-gray-300 text-gray-700 transition-colors hover:border-primary-400 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Minus className="h-4 w-4" />
+                </button>
+
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-gray-900">
+                    {crewByWeight + formData.extraHelpers}
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    {crewByWeight + formData.extraHelpers === 1 ? 'persona' : 'personas'} en total
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  aria-label="Agregar un ayudante"
+                  onClick={() =>
+                    setFormData({
+                      ...formData,
+                      extraHelpers: Math.min(maxExtraHelpers, formData.extraHelpers + 1),
+                    })
+                  }
+                  disabled={formData.extraHelpers >= maxExtraHelpers}
+                  className="flex h-10 w-10 items-center justify-center rounded-full border-2 border-gray-300 text-gray-700 transition-colors hover:border-primary-400 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+
+                {helpersCost > 0 && (
+                  <span className="ml-auto text-sm font-bold text-primary-600">
+                    +${helpersCost.toLocaleString()}
+                  </span>
+                )}
+              </div>
+
+              <p className="mt-2 text-xs text-gray-500">
+                Incluidas en el precio: {crewConfig.includedPeople}. Cada persona adicional
+                son ${crewConfig.pricePerExtraPerson.toLocaleString()}. Máximo{' '}
+                {crewConfig.maxPeople}.
+              </p>
+            </div>
+          </div>
+        </div>
+
         {/* Total servicios */}
         {totalServicesPrice > 0 && (
           <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6">
@@ -242,7 +389,7 @@ export default function AdditionalServicesStep({ onNext, onPrevious }: Additiona
           {/* Lista de fotos */}
           {formData.photos.length > 0 && (
             <div className="mt-4 grid grid-cols-2 md:grid-cols-3 gap-3">
-              {formData.photos.map((photoUrl, index) => (
+              {formData.photos.map((u) => toHiddenFileUrl(u)).map((photoUrl, index) => (
                 <div
                   key={index}
                   className="relative group rounded-lg overflow-hidden border-2 border-gray-200 hover:border-primary-400 transition-all"

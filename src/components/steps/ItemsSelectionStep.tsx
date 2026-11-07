@@ -1,16 +1,17 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useQuoteStore } from '@/store/quoteStore'
 import { getPackagingOptions, PackagingOption } from '@/lib/packagingService'
 import Button from '../ui/Button'
 import Card from '../ui/Card'
 import Modal from '../ui/Modal'
 import Input from '../ui/Input'
-import { Search, Plus, Minus, Trash2, Package, AlertCircle, Box, Info, CheckCircle2, Sparkles } from 'lucide-react'
+import { Search, Plus, Minus, Trash2, Package, AlertCircle, Box, Info, CheckCircle2, Sparkles, ClipboardList, HelpCircle, XCircle } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { generateId } from '@/lib/utils'
-import InventoryAiAssistant from '../ui/InventoryAiAssistant'
+import { FULL_MOVE_ITEM_THRESHOLD, totalUnits } from '@/lib/crewPricing'
+import { buildCatalogIndex, matchItemList, type LineMatch } from '@/lib/itemListMatcher'
 
 interface CatalogItem {
   id: string
@@ -26,6 +27,16 @@ interface CatalogItem {
 
 const CATEGORIES = ['Todos', 'Sala', 'Comedor', 'Dormitorio', 'Electrodomésticos', 'Oficina', 'Otros']
 
+const LIST_EXAMPLE = `2 camas de 2 plazas
+refri, lavadora y microondas
+6 sillas de comedor
+sofá 3 cuerpos
+tele 55"
+10 cajas medianas`
+
+/** Qué se hace con cada línea del listado: el id del item elegido, o `skip`. */
+type LineChoice = string | 'skip' | undefined
+
 interface ItemsSelectionStepProps {
   onNext: () => void
   onPrevious: () => void
@@ -39,9 +50,18 @@ export default function ItemsSelectionStep({ onNext, onPrevious }: ItemsSelectio
   const [loadingCatalog, setLoadingCatalog] = useState(true)
   const [selectedCategory, setSelectedCategory] = useState('Todos')
   const [searchTerm, setSearchTerm] = useState('')
+  // Dos formas de cargar: pegar un listado escrito o buscar item por item (la de siempre).
+  const [loadMode, setLoadMode] = useState<'list' | 'search'>('search')
+  const [pastedList, setPastedList] = useState('')
+  const [listResults, setListResults] = useState<LineMatch<CatalogItem>[] | null>(null)
+  const [lineChoices, setLineChoices] = useState<LineChoice[]>([])
   const [showCustomModal, setShowCustomModal] = useState(false)
   const [showPackagingModal, setShowPackagingModal] = useState(false)
   const [showBulkPackagingModal, setShowBulkPackagingModal] = useState(false)
+  // Aviso de mudanza completa: se muestra UNA vez al cruzar el umbral de bultos, no en
+  // cada click, para que no se vuelva un modal que el cliente aprende a cerrar sin leer.
+  const [showFullMoveModal, setShowFullMoveModal] = useState(false)
+  const [fullMoveNotified, setFullMoveNotified] = useState(false)
 
   const [selectedItemForPackaging, setSelectedItemForPackaging] = useState<string | null>(null)
   const [selectedPackaging, setSelectedPackaging] = useState<string>('none')
@@ -53,6 +73,7 @@ export default function ItemsSelectionStep({ onNext, onPrevious }: ItemsSelectio
     width: 0,
     depth: 0,
     weight: 0,
+    quantity: 1,
   })
 
   useEffect(() => {
@@ -73,7 +94,7 @@ export default function ItemsSelectionStep({ onNext, onPrevious }: ItemsSelectio
           const catalogItems = data
             .filter((item: any) => item.is_active) // Solo items activos
             .map((item: any) => ({
-              id: String(item.id),
+              id: item.id,
               name: item.name,
               category: item.category,
               volume: item.volume,
@@ -117,7 +138,20 @@ export default function ItemsSelectionStep({ onNext, onPrevious }: ItemsSelectio
     loadPackagingOptions()
   }, [])
 
+  // Cantidad real de bultos (suma de cantidades, no de líneas del catálogo).
+  const unitCount = totalUnits(items)
 
+  // El aviso de mudanza completa se dispara UNA vez al cruzar el umbral, no en cada
+  // click, para que no se vuelva un modal que el cliente aprende a cerrar sin leer.
+  useEffect(() => {
+    if (unitCount > FULL_MOVE_ITEM_THRESHOLD && !fullMoveNotified) {
+      setShowFullMoveModal(true)
+      setFullMoveNotified(true)
+    }
+  }, [unitCount, fullMoveNotified])
+
+  // El índice se arma una vez por catálogo, no en cada tecla.
+  const catalogIndex = useMemo(() => buildCatalogIndex(itemsCatalog), [itemsCatalog])
 
   const filteredItems = itemsCatalog.filter((item) => {
     const matchesCategory = selectedCategory === 'Todos' || item.category === selectedCategory
@@ -167,11 +201,71 @@ export default function ItemsSelectionStep({ onNext, onPrevious }: ItemsSelectio
     }
   }
 
+  const handleRecognizeList = () => {
+    const results = matchItemList(pastedList, catalogIndex)
+    if (results.length === 0) {
+      toast.error('No encontramos cosas en el texto. Escribe una por línea o separadas por coma.')
+      return
+    }
+    setListResults(results)
+    // Lo reconocido sin duda viene elegido; lo dudoso queda sin responder; lo que no se
+    // encontró, afuera.
+    setLineChoices(
+      results.map((r) => (r.status === 'match' ? r.item.id : r.status === 'none' ? 'skip' : undefined))
+    )
+  }
+
+  const setLineChoice = (index: number, choice: LineChoice) => {
+    setLineChoices((prev) => prev.map((c, i) => (i === index ? choice : c)))
+  }
+
+  const handleAddRecognized = () => {
+    if (!listResults) return
+    // Se suman por item ANTES de tocar el store: dos líneas que apuntan al mismo item
+    // («2 veladores» y «velador») con el `items` de este render crearían dos filas.
+    const quantities = new Map<string, number>()
+    listResults.forEach((r, i) => {
+      const choice = lineChoices[i]
+      if (!choice || choice === 'skip') return
+      quantities.set(choice, (quantities.get(choice) || 0) + r.line.quantity)
+    })
+    if (quantities.size === 0) {
+      toast.error('No hay nada elegido para agregar')
+      return
+    }
+
+    let units = 0
+    quantities.forEach((quantity, id) => {
+      const catalogItem = itemsCatalog.find((c) => c.id === id)
+      if (!catalogItem) return
+      const existing = items.find((i) => i.id === id)
+      if (existing) {
+        updateItem(id, { quantity: existing.quantity + quantity })
+      } else {
+        addItem({ ...catalogItem, quantity })
+      }
+      units += quantity
+    })
+
+    toast.success(`Agregamos ${units} ${units === 1 ? 'artículo' : 'artículos'} a tu lista`)
+    setPastedList('')
+    setListResults(null)
+    setLineChoices([])
+  }
+
   const handleAddCustomItem = () => {
     // Calcular volumen a partir de dimensiones (convertir cm a metros, luego a m³)
     const volumeInM3 = ((customItem.height * customItem.width * customItem.depth) / 1000000).toFixed(4)
 
-    if (!customItem.name || customItem.height <= 0 || customItem.width <= 0 || customItem.depth <= 0 || customItem.weight <= 0) {
+    if (
+      !customItem.name ||
+      customItem.height <= 0 ||
+      customItem.width <= 0 ||
+      customItem.depth <= 0 ||
+      customItem.weight <= 0 ||
+      !Number.isInteger(customItem.quantity) ||
+      customItem.quantity <= 0
+    ) {
       toast.error('Completa todos los campos del item personalizado')
       return
     }
@@ -182,15 +276,19 @@ export default function ItemsSelectionStep({ onNext, onPrevious }: ItemsSelectio
       category: 'Personalizado',
       volume: parseFloat(volumeInM3),
       weight: customItem.weight,
-      quantity: 1,
+      quantity: customItem.quantity,
       isFragile: false,
       isHeavy: customItem.weight > 50,
       isGlass: false,
     })
 
-    setCustomItem({ name: '', height: 0, width: 0, depth: 0, weight: 0 })
+    setCustomItem({ name: '', height: 0, width: 0, depth: 0, weight: 0, quantity: 1 })
     setShowCustomModal(false)
-    toast.success(`Item agregado - Volumen: ${volumeInM3} m³`)
+    toast.success(
+      `${customItem.quantity} ${customItem.quantity === 1 ? 'item agregado' : 'items agregados'} - Volumen total: ${(
+        Number(volumeInM3) * customItem.quantity
+      ).toFixed(4)} m³`
+    )
   }
 
   const handleOpenPackagingModal = (itemId: string) => {
@@ -265,20 +363,6 @@ export default function ItemsSelectionStep({ onNext, onPrevious }: ItemsSelectio
   // Contar items con embalaje
   const itemsWithPackaging = items.filter(item => item.packaging && item.packaging.type !== 'none').length
 
-  const handleApplyAiItems = (recognized: Array<{ catalogItemId: string; quantity: number }>) => {
-    recognized.forEach(({ catalogItemId, quantity }) => {
-      const catalogItem = itemsCatalog.find((item) => item.id === catalogItemId)
-      if (!catalogItem) return
-
-      const existingItem = items.find((item) => item.id === catalogItem.id)
-      if (existingItem) {
-        updateItem(existingItem.id, { quantity: existingItem.quantity + quantity })
-      } else {
-        addItem({ ...catalogItem, quantity })
-      }
-    })
-  }
-
   const handleNext = () => {
     if (items.length === 0) {
       toast.error('Debes seleccionar al menos un item')
@@ -290,29 +374,213 @@ export default function ItemsSelectionStep({ onNext, onPrevious }: ItemsSelectio
 
   return (
     <div className="max-w-7xl mx-auto animate-slide-up">
-      <div className="mb-6 grid gap-4 lg:grid-cols-3 lg:items-center">
-        <div className="text-center lg:col-span-2">
-          <h2 className="text-3xl font-bold text-gray-900 mb-2">Selecciona tus Items</h2>
-          <p className="text-gray-600">
-            Marca todos los muebles y objetos que necesitas transportar
-          </p>
-        </div>
-        <div className="lg:col-span-1">
-          <InventoryAiAssistant
-            catalog={itemsCatalog}
-            onApply={handleApplyAiItems}
-            onFindManually={(query) => {
-              setSelectedCategory('Todos')
-              setSearchTerm(query)
-            }}
-          />
-        </div>
+      <div className="mb-6 text-center">
+        <h2 className="text-3xl font-bold text-gray-900 mb-2">Selecciona tus Items</h2>
+        <p className="text-gray-600">
+          Pega tu lista de cosas y la reconocemos, o agrégalas una por una desde el catálogo
+        </p>
       </div>
 
       <div className="grid lg:grid-cols-3 gap-6">
         {/* Panel izquierdo - Catálogo */}
         <div className="lg:col-span-2">
           <Card variant="elevated">
+            {/* Cómo cargar: pegar el listado o buscar item por item */}
+            <p className="text-sm font-semibold text-gray-800 mb-2">¿Cómo quieres agregar tus cosas?</p>
+            <div className="grid grid-cols-2 gap-2 mb-6 p-1 bg-gray-100 rounded-xl" role="tablist">
+              {([
+                ['list', 'Pega tu listado', ClipboardList],
+                ['search', 'Busca ítem por ítem', Search],
+              ] as const).map(([mode, label, Icon]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  role="tab"
+                  aria-selected={loadMode === mode}
+                  onClick={() => setLoadMode(mode)}
+                  className={`flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold transition-all ${loadMode === mode
+                    ? 'bg-white text-primary-700 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                >
+                  <Icon className="w-4 h-4 flex-shrink-0" />
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {loadMode === 'list' ? (
+              <div className="mb-2">
+                <p className="text-sm text-gray-600 mb-3">
+                  Pega tu listado tal como lo tienes, una cosa por línea o separadas por coma.
+                  Reconocemos las cantidades y solo te preguntamos lo que no quede claro.
+                </p>
+                <textarea
+                  value={pastedList}
+                  onChange={(e) => setPastedList(e.target.value)}
+                  placeholder={LIST_EXAMPLE}
+                  rows={7}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+                />
+                <Button
+                  type="button"
+                  onClick={handleRecognizeList}
+                  disabled={!pastedList.trim()}
+                  className="w-full mt-3"
+                >
+                  <ClipboardList className="w-4 h-4 mr-2" />
+                  Reconocer mi listado
+                </Button>
+
+                {listResults && (() => {
+                  const matched = listResults.filter((r) => r.status === 'match').length
+                  const doubts = listResults.filter((r) => r.status === 'doubt').length
+                  const missing = listResults.filter((r) => r.status === 'none').length
+                  const pending = listResults.filter((r, i) => r.status === 'doubt' && lineChoices[i] === undefined).length
+                  const chosen = lineChoices.filter((c) => c && c !== 'skip').length
+
+                  return (
+                    <div className="mt-6 space-y-5">
+                      <div className="flex flex-wrap gap-2 text-xs font-medium">
+                        <span className="px-2 py-1 rounded-full bg-green-100 text-green-800">{matched} reconocidos</span>
+                        {doubts > 0 && <span className="px-2 py-1 rounded-full bg-amber-100 text-amber-800">{doubts} con duda</span>}
+                        {missing > 0 && <span className="px-2 py-1 rounded-full bg-gray-200 text-gray-700">{missing} sin encontrar</span>}
+                      </div>
+
+                      {doubts > 0 && (
+                        <div>
+                          <h4 className="flex items-center gap-2 text-sm font-bold text-amber-800 mb-2">
+                            <HelpCircle className="w-4 h-4" />
+                            ¿Cuál de estos es?
+                          </h4>
+                          <div className="space-y-3">
+                            {listResults.map((r, i) => r.status !== 'doubt' ? null : (
+                              <div key={i} className="p-3 rounded-lg border border-amber-200 bg-amber-50">
+                                <div className="text-sm text-gray-800 mb-2">
+                                  <span className="font-semibold">{r.line.quantity}×</span> «{r.line.text}»
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  {r.candidates.map((c) => (
+                                    <button
+                                      key={c.id}
+                                      type="button"
+                                      onClick={() => setLineChoice(i, c.id)}
+                                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${lineChoices[i] === c.id
+                                        ? 'bg-primary-600 border-primary-600 text-white'
+                                        : 'bg-white border-gray-300 text-gray-700 hover:border-primary-400'
+                                        }`}
+                                    >
+                                      {c.name.trim()}
+                                    </button>
+                                  ))}
+                                  <button
+                                    type="button"
+                                    onClick={() => setLineChoice(i, 'skip')}
+                                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${lineChoices[i] === 'skip'
+                                      ? 'bg-gray-700 border-gray-700 text-white'
+                                      : 'bg-white border-gray-300 text-gray-500 hover:border-gray-400'
+                                      }`}
+                                  >
+                                    Ninguno
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {matched > 0 && (
+                        <div>
+                          <h4 className="flex items-center gap-2 text-sm font-bold text-green-800 mb-2">
+                            <CheckCircle2 className="w-4 h-4" />
+                            Reconocidos
+                          </h4>
+                          <div className="divide-y divide-gray-100 rounded-lg border border-gray-200">
+                            {listResults.map((r, i) => r.status !== 'match' ? null : (
+                              <div key={i} className={`flex items-center justify-between gap-3 px-3 py-2 ${lineChoices[i] === 'skip' ? 'opacity-50' : ''}`}>
+                                <div className="min-w-0">
+                                  <div className="text-sm font-medium text-gray-900">
+                                    {r.line.quantity}× {r.item.name.trim()}
+                                  </div>
+                                  <div className="text-xs text-gray-500 truncate">«{r.line.raw}»</div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setLineChoice(i, lineChoices[i] === 'skip' ? r.item.id : 'skip')}
+                                  className="text-xs font-medium text-gray-500 hover:text-red-600 flex-shrink-0"
+                                >
+                                  {lineChoices[i] === 'skip' ? 'Incluir' : 'Quitar'}
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {missing > 0 && (
+                        <div>
+                          <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-2">
+                            <XCircle className="w-4 h-4" />
+                            No lo encontramos en el catálogo
+                          </h4>
+                          <div className="space-y-2">
+                            {listResults.map((r, i) => r.status !== 'none' ? null : (
+                              <div key={i} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-gray-50 border border-gray-200">
+                                <span className="text-sm text-gray-800">
+                                  <span className="font-semibold">{r.line.quantity}×</span> «{r.line.text}»
+                                </span>
+                                <div className="flex gap-3 text-xs font-medium">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSearchTerm('')
+                                      setSelectedCategory('Todos')
+                                      setLoadMode('search')
+                                    }}
+                                    className="text-primary-600 hover:text-primary-700"
+                                  >
+                                    Buscar en el catálogo
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setCustomItem({ ...customItem, name: r.line.text, quantity: r.line.quantity })
+                                      setShowCustomModal(true)
+                                    }}
+                                    className="text-primary-600 hover:text-primary-700"
+                                  >
+                                    Agregar como personalizado
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {pending > 0 && (
+                        <p className="text-xs text-amber-800">
+                          Te {pending === 1 ? 'queda 1 duda' : `quedan ${pending} dudas`} sin responder: si no eliges, esas líneas no se agregan.
+                        </p>
+                      )}
+
+                      <Button
+                        type="button"
+                        variant="brand"
+                        onClick={handleAddRecognized}
+                        disabled={chosen === 0}
+                        className="w-full"
+                      >
+                        <Plus className="w-4 h-4 mr-2" />
+                        Agregar a mi lista
+                      </Button>
+                    </div>
+                  )
+                })()}
+              </div>
+            ) : (
+            <>
             {/* Buscador y filtros */}
             <div className="mb-6">
               <div className="relative mb-4">
@@ -399,6 +667,8 @@ export default function ItemsSelectionStep({ onNext, onPrevious }: ItemsSelectio
                 )
               })}
             </div>
+            </>
+            )}
 
             {/* Botón item personalizado */}
             <div className="mt-4">
@@ -498,10 +768,30 @@ export default function ItemsSelectionStep({ onNext, onPrevious }: ItemsSelectio
                           key={item.id}
                           className="p-2 bg-gray-50 rounded-lg"
                         >
-                          <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center justify-between mb-1 gap-2">
                             <div className="flex-1">
                               <div className="font-medium text-sm">{item.name}</div>
-                              <div className="text-xs text-gray-500">x{item.quantity}</div>
+                              <div className="mt-1 flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDecreaseItem(item.id)}
+                                  className="flex h-6 w-6 items-center justify-center rounded-full bg-red-100 text-red-600 hover:bg-red-200"
+                                  aria-label={`Quitar una unidad de ${item.name}`}
+                                >
+                                  <Minus className="h-3 w-3" />
+                                </button>
+                                <span className="min-w-5 text-center text-xs font-semibold text-gray-700">
+                                  {item.quantity}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => updateItem(item.id, { quantity: item.quantity + 1 })}
+                                  className="flex h-6 w-6 items-center justify-center rounded-full bg-primary-100 text-primary-600 hover:bg-primary-200"
+                                  aria-label={`Agregar una unidad de ${item.name}`}
+                                >
+                                  <Plus className="h-3 w-3" />
+                                </button>
+                              </div>
                             </div>
                             <div className="flex items-center gap-1">
                               <button
@@ -728,6 +1018,34 @@ export default function ItemsSelectionStep({ onNext, onPrevious }: ItemsSelectio
             }
           />
 
+          <Input
+            label="Cantidad"
+            type="number"
+            min="1"
+            step="1"
+            placeholder="1"
+            value={customItem.quantity}
+            onChange={(e) =>
+              setCustomItem({
+                ...customItem,
+                quantity: Math.max(1, Math.trunc(Number(e.target.value) || 1)),
+              })
+            }
+          />
+
+          {customItem.quantity > 1 && customItem.height > 0 && customItem.width > 0 && customItem.depth > 0 && (
+            <p className="text-sm text-gray-600">
+              Volumen total para {customItem.quantity} unidades:{' '}
+              <strong>
+                {(
+                  (customItem.height * customItem.width * customItem.depth * customItem.quantity) /
+                  1000000
+                ).toFixed(4)}{' '}
+                m³
+              </strong>
+            </p>
+          )}
+
           <div className="flex gap-3 pt-4">
             <Button variant="outline" onClick={() => setShowCustomModal(false)} className="flex-1">
               Cancelar
@@ -834,6 +1152,47 @@ export default function ItemsSelectionStep({ onNext, onPrevious }: ItemsSelectio
         </div>
       </Modal>
 
+      {/* Aviso de mudanza completa. El objetivo es que TERMINE de cotizar sabiendo que
+          el precio es estimado; el contacto lo iniciamos nosotros después. Por eso no
+          hay salida al formulario de contacto acá: mandarlo a escribirnos en este punto
+          corta la cotización justo cuando ya cargó todo. */}
+      <Modal
+        isOpen={showFullMoveModal}
+        onClose={() => setShowFullMoveModal(false)}
+        title="Con esta cantidad, el precio es estimado"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-700">
+            Llevas <strong>{unitCount} artículos</strong>. Por sobre{' '}
+            {FULL_MOVE_ITEM_THRESHOLD} bultos ya es una mudanza completa: el camión, la
+            cantidad de gente y el tiempo que toma dependen de detalles que la lista sola
+            no alcanza a reflejar.
+          </p>
+
+          <div className="rounded-lg bg-blue-50 border border-blue-200 p-4 text-sm text-blue-900">
+            <p className="font-semibold mb-1">Sigue cotizando con tranquilidad</p>
+            <p>
+              Al terminar te mostramos el precio estimado con todo lo que cargaste, y
+              después te contactamos nosotros para afinar los detalles y dejarlo
+              confirmado. No tienes que hacer nada más ahora.
+            </p>
+          </div>
+
+          <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
+            En mudanzas completas trabajamos hasta un <strong>5º piso sin ascensor</strong>.
+            Si tu edificio supera eso, lo revisamos contigo cuando te contactemos.
+          </div>
+
+          <Button
+            onClick={() => setShowFullMoveModal(false)}
+            variant="brand"
+            className="w-full"
+          >
+            Entendido, seguir cotizando
+          </Button>
+        </div>
+      </Modal>
+
       {/* Botones */}
       <div className="flex gap-4 mt-6">
         <Button type="button" onClick={onPrevious} variant="outline" className="flex-1">
@@ -846,4 +1205,3 @@ export default function ItemsSelectionStep({ onNext, onPrevious }: ItemsSelectio
     </div>
   )
 }
-

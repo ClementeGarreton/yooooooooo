@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
-  title: 'Pago - Yo me Encargo',
+  title: 'Pago',
   description: 'Procesa tu pago de forma segura',
   robots: 'noindex, nofollow', // No indexar páginas de pago
 }

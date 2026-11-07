@@ -22,11 +22,30 @@ interface AnalyticsData {
   funnel: FunnelStage[]
 }
 
+/**
+ * Abre la pestaña Reservas filtrada por ese mes.
+ *
+ * Reusa el filtro de rango que ya existe en Reservas en vez de inventar uno nuevo: se
+ * pasa desde/hasta por la URL, igual que el `?q=` con el que el dashboard ya abre una
+ * reserva puntual. El último día se calcula con `new Date(año, mes, 0)`, que devuelve el
+ * último del mes anterior al que se le pasa — o sea el correcto, sin tabla de 30/31.
+ */
+function abrirMesEnReservas(month: string) {
+  const [anio, mes] = month.split('-').map(Number)
+  if (!anio || !mes) return
+  const ultimo = new Date(anio, mes, 0).getDate()
+  const desde = `${month}-01`
+  const hasta = `${month}-${String(ultimo).padStart(2, '0')}`
+  window.location.href = `/admin?tab=bookings&desde=${desde}&hasta=${hasta}`
+}
+
 const BRAND = '#ff6a2c'
-const SOURCE_COLORS = [
-  '#ff6a2c', '#2c7fff', '#22c55e', '#a855f7',
-  '#eab308', '#ec4899', '#14b8a6', '#94a3b8',
-]
+const SOURCE_COLORS: Record<string, string> = {
+  web: '#2c7fff',
+  rrss: '#ec4899',
+  recomendacion: '#14b8a6',
+  cliente_antiguo: '#16a34a',
+}
 const FUNNEL_COLORS = ['#ff6a2c', '#2c7fff', '#22c55e']
 
 const clp = (n: number) => `$${Math.round(n).toLocaleString('es-CL')}`
@@ -72,16 +91,24 @@ export default function DashboardCharts() {
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       <Card className="p-6 lg:col-span-2">
-        <h3 className="text-lg font-semibold text-gray-900 mb-1">
-          Reservas e ingresos por mes
-        </h3>
-        <p className="text-sm text-gray-500 mb-4">
-          Últimos 6 meses · por fecha de mudanza, excluye canceladas
+        <h3 className="mb-1 text-lg font-semibold text-gray-900">Reservas e ingresos por mes</h3>
+        <p className="mb-4 text-sm text-gray-500">
+          Últimos 6 meses · por fecha de mudanza · mismo criterio que las tarjetas de
+          arriba (excluye canceladas, no atendidas y pre-reservas sin pagar) ·{' '}
+          <span className="font-medium text-gray-600">clic en un mes para ver sus reservas</span>
         </p>
         <ResponsiveContainer width="100%" height={280}>
-          <ComposedChart data={data.monthly} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+          <ComposedChart
+            data={data.monthly}
+            margin={{ top: 8, right: 12, left: 0, bottom: 0 }}
+            onClick={(e: any) => {
+              const punto = e?.activePayload?.[0]?.payload as MonthlyPoint | undefined
+              if (punto?.month) abrirMesEnReservas(punto.month)
+            }}
+            style={{ cursor: 'pointer' }}
+          >
             <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
             <XAxis dataKey="label" tick={{ fontSize: 12 }} />
             <YAxis
@@ -97,10 +124,28 @@ export default function DashboardCharts() {
             />
             <Tooltip
               formatter={(value: unknown, name: unknown) =>
-                name === 'Ingresos' ? clp(Number(value)) : String(value)
+                name === 'Reservas' ? String(value) : clp(Number(value))
               }
             />
-            <Bar yAxisId="left" dataKey="revenue" name="Ingresos" fill={BRAND} radius={[4, 4, 0, 0]} />
+            {/* Apiladas: cobrado abajo y por cobrar arriba. Juntas NO siempre suman el
+                valor reservado — a quien pagó completo se le descontó un 5%, y ese
+                descuento no es deuda de nadie. Por eso el total va en el tooltip como
+                línea aparte y no como la altura de la barra. */}
+            <Bar
+              yAxisId="left"
+              dataKey="paid"
+              name="Cobrado"
+              stackId="dinero"
+              fill="#16a34a"
+            />
+            <Bar
+              yAxisId="left"
+              dataKey="pending"
+              name="Por cobrar"
+              stackId="dinero"
+              fill={BRAND}
+              radius={[4, 4, 0, 0]}
+            />
             <Line
               yAxisId="right"
               type="monotone"
@@ -115,8 +160,10 @@ export default function DashboardCharts() {
       </Card>
 
       <Card className="p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-1">Leads por origen</h3>
-        <p className="text-sm text-gray-500 mb-4">Histórico</p>
+        <h3 className="mb-1 text-lg font-semibold text-gray-900">Clientes por origen</h3>
+        <p className="mb-4 text-sm text-gray-500">
+          Clientes atendidos o agregados manualmente · un cliente por email
+        </p>
         {data.sources.length === 0 ? (
           <p className="text-sm text-gray-400">Sin datos.</p>
         ) : (
@@ -130,9 +177,9 @@ export default function DashboardCharts() {
               <XAxis type="number" allowDecimals={false} tick={{ fontSize: 12 }} />
               <YAxis type="category" dataKey="label" width={92} tick={{ fontSize: 12 }} />
               <Tooltip />
-              <Bar dataKey="count" name="Leads" radius={[0, 4, 4, 0]}>
-                {data.sources.map((_, i) => (
-                  <Cell key={i} fill={SOURCE_COLORS[i % SOURCE_COLORS.length]} />
+              <Bar dataKey="count" name="Clientes" radius={[0, 4, 4, 0]}>
+                {data.sources.map((source) => (
+                  <Cell key={source.source} fill={SOURCE_COLORS[source.source] || '#94a3b8'} />
                 ))}
               </Bar>
             </BarChart>
@@ -141,8 +188,8 @@ export default function DashboardCharts() {
       </Card>
 
       <Card className="p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-1">Embudo</h3>
-        <p className="text-sm text-gray-500 mb-4">Leads → Reservas → Completadas</p>
+        <h3 className="mb-1 text-lg font-semibold text-gray-900">Embudo</h3>
+        <p className="mb-4 text-sm text-gray-500">Leads → Reservas → Completadas</p>
         <ResponsiveContainer width="100%" height={260}>
           <BarChart data={data.funnel} margin={{ top: 4, right: 12, left: 0, bottom: 4 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#eee" />

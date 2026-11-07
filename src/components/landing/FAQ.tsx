@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { Plus, MessageCircle } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { trackEvent } from '@/lib/tracking'
+import { companyWhatsAppLink } from '@/lib/whatsapp'
 
 const FAQS = [
   {
@@ -55,7 +56,7 @@ export default function FAQ() {
               ¿Te queda algo en el tintero? Escríbenos por WhatsApp y te respondemos al toque.
             </p>
             <a
-              href="https://wa.me/56954390267"
+              href={companyWhatsAppLink()}
               target="_blank"
               rel="noopener noreferrer"
               onClick={() => trackEvent('Contact', { method: 'whatsapp', location: 'faq' })}

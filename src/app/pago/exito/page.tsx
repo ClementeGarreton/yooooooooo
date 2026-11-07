@@ -10,7 +10,6 @@ import { formatCurrency } from '@/lib/utils'
 import { generateBookingPDF } from '@/lib/pdfGenerator'
 import { trackEvent } from '@/lib/tracking'
 import toast from 'react-hot-toast'
-import WhatsAppHandoff from '@/components/ui/WhatsAppHandoff'
 
 function PaymentSuccessContent() {
     const searchParams = useSearchParams()
@@ -21,8 +20,6 @@ function PaymentSuccessContent() {
         quoteId: '',
     })
     const [isDownloading, setIsDownloading] = useState(false)
-    const [isPdfUploaded, setIsPdfUploaded] = useState(false)
-    const [isUploadingPdf, setIsUploadingPdf] = useState(false)
     const hasTracked = useRef(false)
 
     useEffect(() => {
@@ -45,58 +42,6 @@ function PaymentSuccessContent() {
             hasTracked.current = true
         }
     }, [paymentInfo])
-
-    // Subir PDF automáticamente cuando se carga la página
-    useEffect(() => {
-        const uploadPdfAutomatically = async () => {
-            // Solo subir si tenemos los datos necesarios y no se ha subido ya
-            if (!paymentInfo.quoteId || isPdfUploaded || isUploadingPdf) {
-                return
-            }
-
-            try {
-                setIsUploadingPdf(true)
-                console.log('[PDF Auto] Iniciando subida automática de PDF...')
-                console.log('[PDF Auto] Quote ID:', paymentInfo.quoteId)
-
-                // Generar el PDF (sin descargarlo)
-                const pdfResult = await generateBookingPDF(paymentInfo, false) // false = no descargar
-
-                if (!pdfResult) {
-                    console.error('[PDF Auto] No se pudo generar el PDF')
-                    return
-                }
-
-                console.log('[PDF Auto] PDF generado:', pdfResult.fileName)
-
-                // Subir a Supabase Storage
-                const formData = new FormData()
-                formData.append('pdf', pdfResult.blob, pdfResult.fileName)
-                formData.append('quoteId', paymentInfo.quoteId)
-
-                const uploadResponse = await fetch('/api/bookings/upload-pdf', {
-                    method: 'POST',
-                    body: formData
-                })
-
-                if (uploadResponse.ok) {
-                    const successData = await uploadResponse.json()
-                    console.log('[PDF Auto] PDF subido exitosamente:', successData)
-                    setIsPdfUploaded(true)
-                    toast.success('✅ Comprobante generado y guardado', { duration: 2000 })
-                } else {
-                    const errorData = await uploadResponse.json().catch(() => ({}))
-                    console.error('[PDF Auto] Error al subir:', errorData)
-                }
-            } catch (error) {
-                console.error('[PDF Auto] Error:', error)
-            } finally {
-                setIsUploadingPdf(false)
-            }
-        }
-
-        uploadPdfAutomatically()
-    }, [paymentInfo.quoteId, isPdfUploaded, isUploadingPdf])
 
     const handleDownloadPDF = async () => {
         try {
@@ -167,23 +112,6 @@ function PaymentSuccessContent() {
                         </div>
                     </div>
 
-                    {/* WhatsApp: siguiente paso prioritario */}
-                    <div className="mb-8">
-                        <WhatsAppHandoff
-                            message={[
-                                'Hola, acabo de realizar un pago/reserva en Yo Me Encargo y quiero afinar los detalles con un EJECUTIVO y continuar la coordinación.',
-                                paymentInfo.quoteId ? `Cotización: ${paymentInfo.quoteId}` : '',
-                                paymentInfo.order ? `Orden Flow: #${paymentInfo.order}` : '',
-                                paymentInfo.amount ? `Monto pagado: ${formatCurrency(parseInt(paymentInfo.amount))}` : '',
-                            ].filter(Boolean).join('\n')}
-                            label="AFINAR DETALLES CON NUESTRO EJECUTIVO"
-                            headline="AFINA LOS DETALLES DE TU MUDANZA CON NUESTRO EJECUTIVO"
-                            helper="Tu pago ya está registrado. Este mensaje nos permite identificar tu mudanza en WhatsApp desde hoy y acompañarte personalmente para evitar olvidos, cambios de último minuto y problemas de coordinación el día del traslado."
-                            location="payment_success_handoff"
-                            strong
-                        />
-                    </div>
-
                     {/* Próximos pasos */}
                     <div className="bg-gradient-to-r from-brand-blue-light to-brand-blue-light border border-brand-blue rounded-lg p-6 mb-8">
                         <h3 className="font-semibold mb-3 text-primary-900">📧 ¿Qué sigue?</h3>
@@ -194,7 +122,7 @@ function PaymentSuccessContent() {
                             </li>
                             <li className="flex items-start gap-2">
                                 <span className="text-green-600 mt-0.5">✅</span>
-                                <span>Afina ahora los detalles de tu mudanza con nuestro ejecutivo por WhatsApp</span>
+                                <span>Te contactaremos vía WhatsApp para confirmar detalles de la mudanza</span>
                             </li>
                             <li className="flex items-start gap-2">
                                 <span className="text-green-600 mt-0.5">✅</span>
@@ -209,8 +137,6 @@ function PaymentSuccessContent() {
 
                     {/* Acciones */}
                     <div className="space-y-6">
-
-
                         <Button
                             variant="primary"
                             className="w-full"
@@ -245,7 +171,7 @@ function PaymentSuccessContent() {
                             ¿Necesitas ayuda? Contáctanos:
                         </p>
                         <p className="text-sm font-semibold text-primary-600">
-                            📞 +56 9 5439 0267 | 📧 contacto@yomeencargo.cl
+                            📞 +56 9 5233 4799 | 📧 contacto@yomeencargo.cl
                         </p>
                     </div>
                 </Card>

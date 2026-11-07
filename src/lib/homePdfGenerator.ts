@@ -1,5 +1,8 @@
-import jsPDF from 'jspdf'
+// Mismo criterio que pdfGenerator.ts: jsPDF se carga bajo demanda para que no sume
+// kB al First Load de /domicilio/exito (esta función recién se usa al generar/bajar el PDF).
+import type jsPDF from 'jspdf'
 import { formatCurrency } from './utils'
+import { applyPdfTextSanitizer } from './pdfText'
 
 interface HomePaymentInfo {
     token: string
@@ -16,8 +19,12 @@ export const generateHomePDF = async (
     download: boolean = true
 ): Promise<{ blob: Blob; fileName: string } | null> => {
     try {
-        // Crear nuevo documento PDF
-        const pdf = new jsPDF('p', 'mm', 'a4')
+        // Crear nuevo documento PDF. La librería entra bajo demanda (ver import del encabezado).
+        const { default: JsPDF } = await import('jspdf')
+        const pdf = new JsPDF('p', 'mm', 'a4')
+        // Deja el documento a salvo de emojis y guiones largos: la fuente del PDF no los
+        // dibuja y saldrían como basura. Se aplica una sola vez, sobre todo lo que se escriba.
+        applyPdfTextSanitizer(pdf as any)
         const pageWidth = pdf.internal.pageSize.getWidth()
 
         // Colores corporativos
@@ -124,8 +131,11 @@ export const generateHomePDF = async (
         pdf.setFont('helvetica', 'normal')
         pdf.setFontSize(11)
 
+        // El monto sale del pago, no de la configuración: quien pagó $23.000 tiene que
+        // seguir leyendo $23.000 en su comprobante aunque después cambie el precio.
+        const montoPagado = formatCurrency(parseInt(paymentInfo.amount))
         const services = [
-            `✓ Si contratas el servicio después, ${formatCurrency(parseInt(paymentInfo.amount || '0'))} se descuentan`,
+            `✓ Si contratas el servicio después, los ${montoPagado} se descuentan`,
             '   del valor total del flete',
             '✓ Visita profesional a tu domicilio',
             '✓ Evaluación completa de tus muebles y objetos',
@@ -168,8 +178,8 @@ export const generateHomePDF = async (
         pdf.setTextColor(128, 128, 128)
         pdf.setFont('helvetica', 'normal')
         
-        pdf.text('Para consultas o cambios, contactanos:', pageWidth / 2, footerY - 10, { align: 'center' })
-        pdf.text('+56 9 5439 0267 | contacto@yomeencargo.cl', pageWidth / 2, footerY - 5, { align: 'center' })
+        pdf.text('Para consultas o cambios, contáctanos:', pageWidth / 2, footerY - 10, { align: 'center' })
+        pdf.text('+56 9 5233 4799 | contacto@yomeencargo.cl', pageWidth / 2, footerY - 5, { align: 'center' })
         pdf.text('www.yomeencargo.cl - Yo Me Encargo Spa', pageWidth / 2, footerY, { align: 'center' })
 
         // Generar el PDF

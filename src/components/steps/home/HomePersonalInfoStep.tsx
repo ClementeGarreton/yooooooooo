@@ -7,7 +7,7 @@ import Card from '@/components/ui/Card'
 import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
 import { User, Mail, Phone } from 'lucide-react'
-import { normalizeChileanPhone } from '@/lib/utils'
+import { normalizeChileanPhone, validatePhone } from '@/lib/utils'
 
 interface HomePersonalInfoStepProps {
   onNext: () => void
@@ -49,8 +49,8 @@ export default function HomePersonalInfoStep({ onNext, onPrevious }: HomePersona
 
     if (!formData.phone.trim()) {
       newErrors.phone = 'El teléfono es requerido'
-    } else if (!/^(\+?56)?[0-9]{8,9}$/.test(formData.phone.replace(/\s/g, ''))) {
-      newErrors.phone = 'Teléfono inválido (ej: 912345678)'
+    } else if (!validatePhone(formData.phone)) {
+      newErrors.phone = 'Revisa el teléfono: debe tener entre 8 y 15 dígitos'
     }
 
     setErrors(newErrors)
@@ -139,7 +139,7 @@ export default function HomePersonalInfoStep({ onNext, onPrevious }: HomePersona
                 type="tel"
                 value={formData.phone}
                 onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                placeholder="912345678"
+                placeholder="9 XXXX XXXX"
                 className="pl-10"
                 error={errors.phone}
               />
@@ -148,7 +148,7 @@ export default function HomePersonalInfoStep({ onNext, onPrevious }: HomePersona
               <p className="text-sm text-red-600 mt-1">{errors.phone}</p>
             )}
             <p className="text-xs text-gray-500 mt-1">
-              Formato: 912345678 o +56912345678
+              Formato: 9 XXXX XXXX o +56 9 XXXX XXXX
             </p>
           </div>
 

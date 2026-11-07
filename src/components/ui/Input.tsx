@@ -18,6 +18,7 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
           </label>
         )}
         <input
+          data-ui="field"
           className={cn(
             'w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all',
             error ? 'border-red-500' : 'border-gray-300',

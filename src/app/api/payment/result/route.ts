@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { applyFlowPaymentByToken } from '@/lib/paymentSync'
+import { siteUrl } from '@/lib/siteUrl'
 
 // Función para generar HTML de redirección
 function createRedirectHtml(url: string, message: string) {
@@ -63,9 +64,9 @@ function createRedirectHtml(url: string, message: string) {
 async function processPaymentResult(token: string, baseUrl: string) {
     console.log('[RESULT] Token recibido:', token)
 
-    // Usar NEXT_PUBLIC_APP_URL para asegurar que siempre redirigimos al dominio correcto
+    // Siempre al dominio público (yomeencargo.cl), nunca al de Vercel: ver siteUrl.ts.
     // (evita problemas cuando Flow redirige desde una URL antigua).
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+    const appUrl = siteUrl()
     const origin = new URL(appUrl).origin
 
     // Misma lógica que el webhook: resuelve la reserva por optional.bookingId y actualiza el
@@ -150,7 +151,7 @@ export async function GET(request: NextRequest) {
 
         if (!token) {
             console.error('Error: No token provided in query params')
-            const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+            const appUrl = siteUrl()
             const origin = new URL(appUrl).origin
             const html = createRedirectHtml(`${origin}/pago/error?reason=no_token`, 'Error')
             return new NextResponse(html, {
@@ -165,7 +166,7 @@ export async function GET(request: NextRequest) {
         })
     } catch (error) {
         console.error('Error processing payment result GET (Critical):', error)
-        const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+        const appUrl = siteUrl()
         const origin = new URL(appUrl).origin
         const html = createRedirectHtml(`${origin}/pago/error?reason=error`, 'Error')
         return new NextResponse(html, {
@@ -184,7 +185,7 @@ export async function POST(request: NextRequest) {
 
         if (!token) {
             console.error('Error: No token provided in POST body')
-            const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+            const appUrl = siteUrl()
             const origin = new URL(appUrl).origin
             const html = createRedirectHtml(`${origin}/pago/error?reason=no_token`, 'Error')
             return new NextResponse(html, {
@@ -199,7 +200,7 @@ export async function POST(request: NextRequest) {
         })
     } catch (error) {
         console.error('Error processing payment result POST (Critical):', error)
-        const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+        const appUrl = siteUrl()
         const origin = new URL(appUrl).origin
         const html = createRedirectHtml(`${origin}/pago/error?reason=error`, 'Error')
         return new NextResponse(html, {

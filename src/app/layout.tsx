@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import { Archivo, Hanken_Grotesk } from 'next/font/google'
 import './globals.css'
 import { Toaster } from 'react-hot-toast'
 import { GoogleTagManager } from '@next/third-parties/google'
@@ -6,13 +7,27 @@ import { MetaPixel } from '@/components/tracking/MetaPixel'
 import AttributionCapture from '@/components/tracking/AttributionCapture'
 import WhatsAppFloatingButton from '@/components/ui/WhatsAppFloatingButton'
 
+const archivo = Archivo({
+  subsets: ['latin'],
+  weight: ['600', '700', '800', '900'],
+  variable: '--font-archivo',
+  display: 'swap',
+})
+
+const hankenGrotesk = Hanken_Grotesk({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700', '800'],
+  variable: '--font-hanken',
+  display: 'swap',
+})
+
 export const metadata: Metadata = {
   metadataBase: new URL('https://yomeencargo.cl'),
   title: {
     default: 'Yo me Encargo - Fletes, Mudanzas y Traslados de Carga en Chile',
     template: '%s | Yo me Encargo'
   },
-  description: 'Servicio profesional de mudanzas, fletes y transporte en la Región Metropolitana y todo Chile. Cotización online instantánea, precios transparentes y atención personalizada. ¡Contáctanos!',
+  description: 'Fletes, mudanzas y traslados de carga en Santiago y todo Chile. Cotiza online y recibe un precio fijo en 3 minutos, sin sorpresas.',
   keywords: ['mudanzas Santiago', 'fletes Chile', 'transporte región metropolitana', 'mudanzas oficina', 'mudanzas hogar', 'traslado regiones', 'cotizador mudanzas', 'fletes Santiago', 'transporte carga Chile', 'mudanzas profesionales', 'mudanzas económicas', 'servicio de mudanzas'],
   authors: [{ name: 'Yo me Encargo', url: 'https://yomeencargo.cl' }],
   creator: 'Yo me Encargo',
@@ -33,9 +48,8 @@ export const metadata: Metadata = {
       'max-snippet': -1,
     },
   },
-  alternates: {
-    canonical: 'https://yomeencargo.cl',
-  },
+  // Sin canonical acá: si lo hubiera, toda página que no declare el suyo quedaría apuntando a
+  // la portada. Cada página pública declara el propio.
   openGraph: {
     type: 'website',
     locale: 'es_CL',
@@ -60,6 +74,11 @@ export const metadata: Metadata = {
   },
   verification: {
     google: '44L3bcsIFU2zQOJ7aqffCqSkWNfWiE-KlxCrL2xNdeo',
+    other: {
+      // Verificación del dominio en Meta (Business Manager), pedida el 24-sep-2026.
+      // Next.js la escribe como <meta name="facebook-domain-verification" content="…" />.
+      'facebook-domain-verification': 'v8myo93d8lxw4o9gesvv7tb32k1otp',
+    },
   },
 }
 
@@ -77,7 +96,7 @@ export default function RootLayout({
     url: 'https://yomeencargo.cl',
     logo: 'https://yomeencargo.cl/images/logo.png',
     image: 'https://yomeencargo.cl/images/hero-truck.jpg',
-    telephone: '+56954390267',
+    telephone: '+56952334799',
     priceRange: '$$',
     areaServed: {
       '@type': 'Country',
@@ -97,11 +116,9 @@ export default function RootLayout({
       'Mudanzas de oficina',
       'Traslado a regiones'
     ],
-    aggregateRating: {
-      '@type': 'AggregateRating',
-      ratingValue: '4.8',
-      reviewCount: '150'
-    }
+    // Sin aggregateRating: Google no muestra estrellas de reseñas propias de una empresa
+    // local, y un promedio que no sale de reseñas visibles en la página es spam para Google.
+    // Las reseñas reales se muestran en la portada (googleReviews.ts).
   }
 
   return (
@@ -120,7 +137,7 @@ export default function RootLayout({
         {/* Meta Pixel */}
         <MetaPixel pixelId={process.env.NEXT_PUBLIC_META_PIXEL_ID || ''} />
       </head>
-      <body>
+      <body className={`${archivo.variable} ${hankenGrotesk.variable}`}>
         <AttributionCapture />
         {children}
         <Toaster position="top-right" />
@@ -134,4 +151,3 @@ export default function RootLayout({
     </html>
   )
 }
-

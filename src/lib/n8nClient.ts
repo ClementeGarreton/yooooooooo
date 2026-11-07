@@ -20,6 +20,21 @@ export interface N8nPostResult {
   status?: number
   /** Motivo legible del fallo (para logs y para devolver al cliente). */
   error?: string
+  /**
+   * Cuerpo de la respuesta ya parseado (null si vino vacío o no era JSON).
+   *
+   * Hace falta porque `ok` NO alcanza para saber si el correo salió: comprobado el
+   * 2026-08-12 contra el webhook real, cuando el workflow de n8n muere a mitad de
+   * camino (credencial mala, error en un nodo) el webhook responde igual
+   * **HTTP 200 con el cuerpo vacío**. La única señal confiable de éxito es que el
+   * nodo `Respond to Webhook` haya alcanzado a devolver `{"success": true}`.
+   */
+  body?: Record<string, unknown> | null
+}
+
+/** ¿La respuesta trae la confirmación explícita de que n8n completó el envío? */
+export function n8nConfirmedSuccess(result: N8nPostResult): boolean {
+  return result.ok && result.body?.success === true
 }
 
 export async function postQuoteWebhook(
@@ -42,8 +57,19 @@ export async function postQuoteWebhook(
     clearTimeout(timer)
 
     if (res.ok) {
-      console.info(`[n8n][${ts}][${label}] OK ${res.status}`)
-      return { ok: true, status: res.status }
+      const raw = await res.text().catch(() => '')
+      let body: Record<string, unknown> | null = null
+      try {
+        const parsed = raw ? JSON.parse(raw) : null
+        if (parsed && typeof parsed === 'object') body = parsed as Record<string, unknown>
+      } catch {
+        // Respuesta 2xx que no es JSON: se deja en null y el llamador decide.
+      }
+      console.info(
+        `[n8n][${ts}][${label}] HTTP ${res.status}` +
+          (body?.success === true ? ' con success:true' : ` SIN confirmación (cuerpo: ${raw.slice(0, 120) || 'vacío'})`)
+      )
+      return { ok: true, status: res.status, body }
     }
 
     const body = await res.text().catch(() => '')

@@ -25,6 +25,19 @@ export function formatTime(date: Date): string {
 }
 
 /**
+ * ¿La fecha de la mudanza ya no se puede reservar? El calendario del cotizador parte mañana.
+ * La fecha queda guardada en el navegador (quote-storage): Tomás cotizó el 27-10-2026 y salió
+ * con el 22-08, la fecha de una cotización suya de agosto.
+ */
+export function isPastMoveDate(date: Date | string | null | undefined): boolean {
+  if (!date) return false
+  const tomorrow = new Date()
+  tomorrow.setDate(tomorrow.getDate() + 1)
+  tomorrow.setHours(0, 0, 0, 0)
+  return new Date(date).getTime() < tomorrow.getTime()
+}
+
+/**
  * Formatea una distancia guardada en km (puede venir con decimales, ej. mudanzas
  * dentro de un mismo edificio/condominio) a metros si es menor a 1km, o a km con
  * un decimal en caso contrario. Antes siempre se mostraba en km redondeados a
@@ -63,8 +76,14 @@ export function validateEmail(email: string): boolean {
 }
 
 export function validatePhone(phone: string): boolean {
-  const re = /^(\+?56)?(\s?)(0?9)(\s?)[9876543]\d{7}$/
-  return re.test(phone.replace(/\s/g, ''))
+  // Cualquier teléfono: entre 8 y 15 dígitos, con o sin «+», espacios, guiones o paréntesis.
+  // Antes solo pasaban los móviles chilenos cuyo segundo dígito era 3–9, y quedaban fuera
+  // números reales (+56 9 2620 8908, 05-oct-2026), fijos y extranjeros: el cliente no podía
+  // cotizar. Un teléfono mal escrito se corrige después; un cliente que no puede avanzar se pierde.
+  const raw = String(phone || '').trim()
+  if (!/^\+?[\d\s().-]+$/.test(raw)) return false
+  const digits = raw.replace(/\D/g, '')
+  return digits.length >= 8 && digits.length <= 15
 }
 
 /**

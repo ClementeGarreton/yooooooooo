@@ -5,6 +5,10 @@ import {
   hasAttribution,
   type AttributionFields,
 } from '@/lib/attributionServer'
+import { siteUrl } from '@/lib/siteUrl'
+import { mergePhotoUrls } from '@/lib/quoteState'
+import { depositAmount } from '@/lib/revenueBreakdown'
+import { normalizeStops } from '@/lib/stops'
 
 export type PaymentType = 'completo' | 'mitad'
 
@@ -47,8 +51,20 @@ export interface EnsureBookingInput {
   estimatedPrice: number
   paymentType: PaymentType
   photoUrls?: string[]
+  /**
+   * Paradas intermedias de la cotización. Sin esto la reserva nacía solo con origen y
+   * destino aunque el cliente hubiera cotizado (y pagado) una parada más. `undefined` = no
+   * se tocan las de la reserva.
+   */
+  stops?: unknown
   /** Atribucion de Google Ads resuelta (cliente o heredada del prospecto por quoteId). */
   attribution?: AttributionFields
+  /**
+   * El cliente marcó la casilla de las Políticas de Garantía justo antes de esta llamada
+   * (pagar en la página o pedir la cotización por correo). Se guarda la hora en
+   * `bookings.policies_accepted_at`.
+   */
+  policiesAccepted?: boolean
 }
 
 /** Error tipado para que las rutas devuelvan 409 cuando el horario ya no tiene cupo. */
@@ -63,7 +79,8 @@ export class SlotUnavailableError extends Error {
 export function computeQuoteAmounts(estimatedPrice: number) {
   return {
     estimated: Math.round(estimatedPrice),
-    abono50: Math.round(estimatedPrice * 0.5),
+    // La mitad, con el piso de MIN_ABONO_CLP (ver depositAmount).
+    abono50: depositAmount(estimatedPrice),
     full95: Math.round(estimatedPrice * 0.95), // 100% con 5% de descuento
   }
 }
@@ -77,7 +94,22 @@ export function computeQuoteAmounts(estimatedPrice: number) {
 export async function ensureProvisionalBooking(
   input: EnsureBookingInput
 ): Promise<{ quoteId: string; bookingRowId: string; existed: boolean; locked: boolean }> {
-  const { quoteId, client, schedule, addresses, propertyDetails, estimatedPrice, paymentType, photoUrls, attribution } = input
+  const {
+    quoteId,
+    client,
+    schedule,
+    addresses,
+    propertyDetails,
+    estimatedPrice,
+    paymentType,
+    photoUrls,
+    stops,
+    attribution,
+    policiesAccepted,
+  } = input
+
+  const stopsField =
+    stops === undefined ? {} : { stops: normalizeStops(stops).length ? normalizeStops(stops) : null }
 
   if (!quoteId || !client?.name || !client?.email || !client?.phone) {
     throw new Error('Datos de cliente incompletos para crear la reserva')
@@ -89,7 +121,7 @@ export async function ensureProvisionalBooking(
   // Idempotencia: ¿ya existe el booking para este quoteId?
   const { data: existing, error: findError } = await supabaseAdmin
     .from('bookings')
-    .select('id, is_provisional, payment_status, gclid, gbraid, wbraid, utm_source, utm_campaign')
+    .select('id, is_provisional, payment_status, photo_urls, gclid, gbraid, wbraid, utm_source, utm_campaign')
     .eq('quote_id', quoteId)
     .maybeSingle()
 
@@ -103,7 +135,8 @@ export async function ensureProvisionalBooking(
     // siempre, incluso después de pagar. Una vez que dejó de ser provisional o ya se aprobó
     // el pago, no se toca aquí: cualquier cambio a esa reserva debe hacerse explícitamente
     // desde el panel admin.
-    const stillEditable = existing.is_provisional !== false && existing.payment_status !== 'approved'
+    const stillEditable =
+      existing.is_provisional !== false && existing.payment_status !== 'approved'
     if (stillEditable) {
       const { error: refreshError } = await supabaseAdmin
         .from('bookings')
@@ -120,15 +153,30 @@ export async function ensureProvisionalBooking(
           destination_floor: propertyDetails?.destination?.floor ?? null,
           destination_has_elevator: propertyDetails?.destination?.hasElevator ?? null,
           destination_parking_distance: propertyDetails?.destination?.parkingDistance ?? null,
+          ...stopsField,
         })
         .eq('id', existing.id)
       if (refreshError) {
         console.error('[quoteCheckout] Error refrescando pre-reserva existente:', refreshError)
       }
     }
+    // Las fotos del cliente se suman siempre, aunque ya haya pagado: si la pre-reserva se creó
+    // antes (desde el panel o con otro envío) sin ellas, quedaban fuera de la reserva.
+    const photos = Array.isArray(photoUrls) ? photoUrls.filter((p) => typeof p === 'string' && p) : []
+    if (photos.length > 0) {
+      const merged = mergePhotoUrls(existing.photo_urls, photos)
+      if (merged.length !== mergePhotoUrls(existing.photo_urls, []).length) {
+        const { error: photosError } = await supabaseAdmin.from('bookings').update({ photo_urls: merged }).eq('id', existing.id)
+        if (photosError) console.error('[quoteCheckout] Error sumando fotos a la pre-reserva:', photosError)
+      }
+    }
     // Backfill de atribucion SOLO donde falte: nunca sobrescribe un gclid ya guardado.
     if (attribution && hasAttribution(attribution)) {
       await backfillAttribution('bookings', existing.id, attribution, existing)
+    }
+    // Una reserva ya pagada no se toca: su aceptación es la que quedó antes del pago.
+    if (stillEditable && policiesAccepted) {
+      await stampPoliciesAccepted(existing.id)
     }
     return { quoteId, bookingRowId: existing.id, existed: true, locked: !stillEditable }
   }
@@ -172,7 +220,7 @@ export async function ensureProvisionalBooking(
     .insert({
       quote_id: quoteId,
       client_name: client.name,
-      client_email: client.email,
+      client_email: client.email.trim().toLowerCase(),
       client_phone: client.phone,
       scheduled_date: schedule.date,
       scheduled_time: schedule.time,
@@ -191,6 +239,7 @@ export async function ensureProvisionalBooking(
       destination_floor: propertyDetails?.destination?.floor ?? null,
       destination_has_elevator: propertyDetails?.destination?.hasElevator ?? null,
       destination_parking_distance: propertyDetails?.destination?.parkingDistance ?? null,
+      ...stopsField,
       is_company: isCompany,
       company_name: isCompany ? client.companyName || null : null,
       company_rut: isCompany ? client.companyRut || null : null,
@@ -205,7 +254,34 @@ export async function ensureProvisionalBooking(
     throw new Error('Error al crear la reserva')
   }
 
+  if (policiesAccepted) {
+    await stampPoliciesAccepted(booking.id)
+  }
+
   return { quoteId, bookingRowId: booking.id, existed: false, locked: false }
+}
+
+/**
+ * Anota en la reserva la hora en que el cliente aceptó las Políticas de Garantía.
+ *
+ * Va en una escritura aparte del insert/refresh a propósito: si la columna todavía no
+ * existe (la migración add_booking_policies_accepted.sql la corre Francisco a mano), la
+ * reserva se crea y se refresca igual, y lo único que se pierde es esta marca, con un
+ * aviso en el log. Nunca frena un pago.
+ */
+async function stampPoliciesAccepted(bookingId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('bookings')
+    .update({ policies_accepted_at: new Date().toISOString() })
+    .eq('id', bookingId)
+  if (!error) return
+  if (error.code === '42703' || error.code === 'PGRST204') {
+    console.warn(
+      '[quoteCheckout] Falta la columna bookings.policies_accepted_at: correr database/migrations/add_booking_policies_accepted.sql'
+    )
+  } else {
+    console.error('[quoteCheckout] Error guardando la aceptación de políticas:', error)
+  }
 }
 
 /**
@@ -222,7 +298,7 @@ export async function createQuoteFlowOrder(params: {
   subject: string
 }): Promise<FlowPaymentResponse> {
   const { quoteId, paymentType, amount, email, subject } = params
-  const appUrl = (process.env.WHATSAPP_QUOTE_BASE_URL || 'https://yo-me-encargo-test97.vercel.app').replace(/\/$/, '')
+  const appUrl = siteUrl()
 
   return flowService.createPayment({
     commerceOrder: `${quoteId}-${paymentType}-${Date.now()}`,

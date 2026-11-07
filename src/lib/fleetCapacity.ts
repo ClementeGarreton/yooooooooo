@@ -12,6 +12,20 @@ export interface FleetVehicle {
   driver?: string
   phone?: string
   status: VehicleStatus
+  /** Clave de color (ver src/lib/vehicleColors.ts). Ausente en flotas antiguas. */
+  color?: string
+  /**
+   * Token del link privado de este camión: /trabajos/<accessToken>. Ausente mientras
+   * el admin no lo haya generado; en ese caso el camión simplemente no tiene link.
+   * NUNCA debe salir de una respuesta que no exija sesión de admin.
+   */
+  accessToken?: string
+  /**
+   * PIN de este camión. Ausente = se usa el PIN general (env DRIVER_PIN), para que un
+   * camión recién creado funcione sin configurar nada. Mismo cuidado que accessToken:
+   * no puede viajar a ninguna superficie pública.
+   */
+  pin?: string
 }
 
 export interface FleetConfigRow {

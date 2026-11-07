@@ -9,7 +9,9 @@ import { Calendar, Clock, TrendingDown, AlertCircle, ChevronLeft, ChevronRight }
 import { format, addDays, isSameDay, startOfDay, endOfMonth, addMonths, startOfMonth, getMonth, getYear } from 'date-fns'
 import { es } from 'date-fns/locale'
 import toast from 'react-hot-toast'
-import { PRICING } from '@/config/pricing'
+import { dateSurcharge, type DateSurchargeKind } from '@/lib/quotePricing'
+import { useTimeSurcharges } from '@/lib/useTimeSurcharges'
+import { isPastMoveDate } from '@/lib/utils'
 
 interface DateTimeStepProps {
   onNext: () => void
@@ -28,14 +30,44 @@ interface SlotData {
   occupancy: string
 }
 
+const NOMBRE_RECARGO: Record<DateSurchargeKind, string> = {
+  saturday: 'sábado',
+  sunday: 'domingo',
+  holiday: 'feriado',
+}
+
+/** «Domingos y feriados tienen un recargo de 15%.» con los porcentajes del panel. */
+function describeSurcharges(
+  surcharges: { saturday: number; sunday: number; holiday: number } | null
+): string | null {
+  if (!surcharges) return null
+  const dias = [
+    { nombre: 'sábados', percent: Number(surcharges.saturday) || 0 },
+    { nombre: 'domingos', percent: Number(surcharges.sunday) || 0 },
+    { nombre: 'feriados', percent: Number(surcharges.holiday) || 0 },
+  ].filter((d) => d.percent > 0)
+  if (dias.length === 0) return null
+
+  const unir = (partes: string[]) =>
+    partes.length === 1 ? partes[0] : `${partes.slice(0, -1).join(', ')} y ${partes[partes.length - 1]}`
+  const mayuscula = (t: string) => t.charAt(0).toUpperCase() + t.slice(1)
+
+  if (dias.every((d) => d.percent === dias[0].percent)) {
+    return `${mayuscula(unir(dias.map((d) => d.nombre)))} tienen un recargo de ${dias[0].percent}%.`
+  }
+  return `${mayuscula(unir(dias.map((d) => `${d.nombre} +${d.percent}%`)))}.`
+}
+
 export default function DateTimeStep({ onNext, onPrevious }: DateTimeStepProps) {
   const { dateTime, isFlexible, setDateTime } = useQuoteStore()
+  const timeSurcharges = useTimeSurcharges()
+  const textoRecargos = useMemo(() => describeSurcharges(timeSurcharges), [timeSurcharges])
   
-  const [selectedDate, setSelectedDate] = useState<Date | null>(
-    dateTime ? new Date(dateTime) : null
-  )
+  // Una fecha guardada que ya pasó no se precarga: hay que elegir otra.
+  const savedDateTime = dateTime && !isPastMoveDate(dateTime) ? new Date(dateTime) : null
+  const [selectedDate, setSelectedDate] = useState<Date | null>(savedDateTime)
   const [selectedTime, setSelectedTime] = useState<string>(
-    dateTime ? format(new Date(dateTime), 'HH:mm') : ''
+    savedDateTime ? format(savedDateTime, 'HH:mm') : ''
   )
   const [flexible, setFlexible] = useState(isFlexible)
   const [selectedMonth, setSelectedMonth] = useState<string>('')
@@ -169,6 +201,11 @@ export default function DateTimeStep({ onNext, onPrevious }: DateTimeStepProps) 
       return
     }
 
+    if (!availableDateSet.has(format(selectedDate, 'yyyy-MM-dd'))) {
+      toast.error('Esa fecha ya no está disponible. Elige otra en el calendario.')
+      return
+    }
+
     if (!selectedTime) {
       toast.error('Por favor selecciona un horario')
       return
@@ -262,14 +299,15 @@ export default function DateTimeStep({ onNext, onPrevious }: DateTimeStepProps) 
                 const dateKey = format(date, 'yyyy-MM-dd')
                 const isAvailable = availableDateSet.has(dateKey)
                 const isSelected = selectedDate ? isSameDay(date, selectedDate) : false
-                const isWeekend = date.getDay() === 6 || date.getDay() === 0
+                const recargo = dateSurcharge(dateKey, timeSurcharges)
+                const conRecargo = recargo.kind !== null
 
                 return (
                   <button
                     key={dateKey}
                     onClick={() => isAvailable && setSelectedDate(date)}
                     disabled={!isAvailable}
-                    title={isWeekend && isAvailable ? `+${(PRICING.saturdaySurcharge / 1000).toFixed(0)}k recargo fin de semana` : undefined}
+                    title={conRecargo && isAvailable && recargo.kind ? `+${recargo.percent}% recargo ${NOMBRE_RECARGO[recargo.kind]}` : undefined}
                     className={`
                       aspect-square flex flex-col items-center justify-center rounded-lg
                       text-xs sm:text-sm font-medium transition-all select-none
@@ -277,7 +315,7 @@ export default function DateTimeStep({ onNext, onPrevious }: DateTimeStepProps) 
                       ${isSelected
                         ? 'bg-primary-600 text-white shadow-md scale-105'
                         : isAvailable
-                          ? isWeekend
+                          ? conRecargo
                             ? 'bg-yellow-50 hover:bg-yellow-100 border border-yellow-200 text-gray-800'
                             : 'bg-white hover:bg-primary-50 border border-gray-200 hover:border-primary-300 text-gray-800'
                           : 'bg-gray-100 border border-gray-200 text-gray-400 line-through decoration-gray-300'
@@ -285,9 +323,9 @@ export default function DateTimeStep({ onNext, onPrevious }: DateTimeStepProps) 
                     `}
                   >
                     <span className="leading-none font-semibold">{format(date, 'd')}</span>
-                    {isWeekend && isAvailable && !isSelected && PRICING.saturdaySurcharge > 0 && (
+                    {conRecargo && isAvailable && !isSelected && (
                       <span className="text-[8px] sm:text-[9px] text-orange-400 leading-none mt-0.5 font-normal">
-                        +{(PRICING.saturdaySurcharge / 1000).toFixed(0)}k
+                        +{recargo.percent}%
                       </span>
                     )}
                   </button>
@@ -297,10 +335,12 @@ export default function DateTimeStep({ onNext, onPrevious }: DateTimeStepProps) 
 
             {/* Leyenda */}
             <div className="flex items-center gap-3 mt-2 text-xs text-gray-500">
-              <span className="flex items-center gap-1">
-                <span className="w-3 h-3 rounded bg-yellow-100 border border-yellow-200 inline-block" />
-                Fin de semana
-              </span>
+              {textoRecargos && (
+                <span className="flex items-center gap-1">
+                  <span className="w-3 h-3 rounded bg-yellow-100 border border-yellow-200 inline-block" />
+                  Con recargo
+                </span>
+              )}
               <span className="flex items-center gap-1">
                 <span className="w-3 h-3 rounded bg-primary-600 inline-block" />
                 Seleccionado
@@ -423,9 +463,11 @@ export default function DateTimeStep({ onNext, onPrevious }: DateTimeStepProps) 
           <p className="text-sm text-blue-800">
             <strong>💡 Tip:</strong> Las mudanzas en horario de mañana son más eficientes.
           </p>
-          <p className="text-sm text-blue-800 mt-2">
-            <strong>🟡 Fin de semana:</strong> Sábados y domingos tienen un recargo adicional de ${(PRICING.saturdaySurcharge / 1000).toFixed(0)}k.
-          </p>
+          {textoRecargos && (
+            <p className="text-sm text-blue-800 mt-2">
+              <strong>🟡 Recargos:</strong> {textoRecargos}
+            </p>
+          )}
         </div>
 
         {/* Botones */}

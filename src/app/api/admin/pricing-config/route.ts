@@ -1,92 +1,43 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
 import { getActorFromRequest, logAdminAction } from '@/lib/activityLog'
+import { hasAdminAction } from '@/lib/adminPermissions'
+import {
+  readPricingConfig,
+  withCrewDefaults,
+  withServiceDefaults,
+  withStairsDefaults,
+} from '@/lib/server/pricingConfigServer'
+
+// Las normalizaciones y la lectura viven en `server/pricingConfigServer.ts`: el endpoint
+// de cotización necesita exactamente la misma configuración y no puede pedírsela a esta
+// ruta por HTTP. Acá queda el contrato HTTP (GET para el cotizador público, PUT para el
+// panel) y nada de la lógica.
 
 export async function GET() {
   try {
-    // Obtener configuración de precios desde la base de datos (el más reciente)
-    const { data: configs, error } = await supabaseAdmin
-      .from('pricing_config')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(1)
-
-    if (error) {
-      console.error('Error fetching pricing config:', error)
-      return NextResponse.json(
-        { error: 'Error obteniendo configuración de precios' },
-        { status: 500 }
-      )
-    }
-
-    const config = configs?.[0]
-
-    // Si no existe configuración, devolver valores por defecto
-    if (!config) {
-      const defaultConfig = {
-        basePrice: 50000,
-        pricePerCubicMeter: 15000,
-        pricePerKilometer: 800,
-        freeKilometers: 50,
-        floorSurcharge: 5000,
-        homeQuotePrice: 80000,
-        additionalServices: {
-          packing: 25000,
-          unpacking: 20000,
-          disassembly: 15000,
-          assembly: 15000
-        },
-        specialPackaging: {
-          fragile: 10000,
-          electronics: 15000,
-          artwork: 25000
-        },
-        timeSurcharges: {
-          saturday: 20,
-          sunday: 50,
-          holiday: 100
-        },
-        discounts: {
-          flexibility: 10,
-          advanceBooking: 5,
-          repeatCustomer: 15
-        }
-      }
-
-      return NextResponse.json(defaultConfig)
-    }
-
-    // Transformar los datos de la BD al formato esperado por el frontend
-    const transformedConfig = {
-      basePrice: config.base_price,
-      pricePerCubicMeter: config.price_per_cubic_meter,
-      pricePerKilometer: config.price_per_kilometer,
-      freeKilometers: config.free_kilometers || 50,
-      floorSurcharge: config.floor_surcharge,
-      homeQuotePrice: Number(config.additional_services?.homeQuotePrice ?? 80000),
-      additionalServices: config.additional_services,
-      specialPackaging: config.special_packaging,
-      timeSurcharges: config.time_surcharges,
-      discounts: config.discounts
-    }
-
-    return NextResponse.json(transformedConfig)
+    const config = await readPricingConfig()
+    return NextResponse.json(config)
   } catch (error) {
     console.error('Error in /api/admin/pricing-config:', error)
     return NextResponse.json(
-      { error: 'Error interno del servidor' },
+      { error: 'Error obteniendo configuración de precios' },
       { status: 500 }
     )
   }
 }
 
 export async function PUT(request: NextRequest) {
+  // Precios en solo lectura para quien no tiene «Cambiar precios» (Tomás, 21-10-2026).
+  if (!(await hasAdminAction(request, 'pricing.edit'))) {
+    return NextResponse.json({ error: 'Tu perfil puede ver los precios, pero no cambiarlos.' }, { status: 403 })
+  }
   try {
     const body = await request.json()
 
     // Validar que todos los campos requeridos estén presentes
     const requiredFields = [
-      'basePrice', 'pricePerCubicMeter', 'pricePerKilometer', 'floorSurcharge', 'homeQuotePrice',
+      'basePrice', 'pricePerCubicMeter', 'pricePerKilometer', 'floorSurcharge',
       'additionalServices', 'specialPackaging', 'timeSurcharges', 'discounts'
     ]
 
@@ -106,10 +57,12 @@ export async function PUT(request: NextRequest) {
       price_per_kilometer: body.pricePerKilometer,
       free_kilometers: body.freeKilometers || 50,
       floor_surcharge: body.floorSurcharge,
-      additional_services: { ...body.additionalServices, homeQuotePrice: body.homeQuotePrice },
+      additional_services: withServiceDefaults(body.additionalServices),
       special_packaging: body.specialPackaging,
       time_surcharges: body.timeSurcharges,
       discounts: body.discounts,
+      crew_config: withCrewDefaults(body.crew),
+      stairs_config: withStairsDefaults(body.stairs),
       updated_at: new Date().toISOString()
     }
 

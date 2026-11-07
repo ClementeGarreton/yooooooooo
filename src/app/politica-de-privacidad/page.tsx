@@ -3,7 +3,7 @@ import Navbar from '@/components/landing/Navbar'
 import Footer from '@/components/landing/Footer'
 
 export const metadata: Metadata = {
-  title: 'Política de Privacidad | Yo me Encargo',
+  title: 'Política de Privacidad',
   description: 'Política de privacidad y protección de datos personales de Yo me Encargo. Conoce cómo protegemos tu información.',
   alternates: {
     canonical: 'https://yomeencargo.cl/politica-de-privacidad',
@@ -68,7 +68,6 @@ export default function PrivacyPage() {
                 <li>Tipo y cantidad de objetos a transportar</li>
                 <li>Fechas y horarios de servicio</li>
                 <li>Comentarios o instrucciones especiales</li>
-                <li>Mensajes, respuestas y fotografías que usted envía a nuestros asistentes de cotización por web o WhatsApp</li>
               </ul>
 
               <h3 className="text-xl font-bold text-gray-900 mb-3 mt-6">2.3 Información Técnica</h3>
@@ -90,8 +89,7 @@ export default function PrivacyPage() {
                 <li><strong>Prestación del servicio:</strong> Coordinar y ejecutar los servicios de mudanza o transporte contratados</li>
                 <li><strong>Comunicación:</strong> Contactarlo para confirmar detalles, enviar actualizaciones y responder consultas</li>
                 <li><strong>Facturación:</strong> Procesar pagos y emitir facturas o boletas</li>
-                <li><strong>Asistentes de cotización:</strong> Interpretar sus mensajes o fotografías para completar una cotización, resolver ambigüedades y generar el resumen o PDF solicitado</li>
-                <li><strong>Mejora del servicio:</strong> Revisar el historial de atención y resultados estructurados para detectar errores, mejorar nuestros asistentes y optimizar la experiencia del usuario</li>
+                <li><strong>Mejora del servicio:</strong> Analizar y mejorar nuestros servicios y experiencia del usuario</li>
                 <li><strong>Marketing:</strong> Enviar información promocional sobre nuestros servicios (solo con su consentimiento)</li>
                 <li><strong>Cumplimiento legal:</strong> Cumplir con obligaciones legales y regulatorias</li>
                 <li><strong>Seguridad:</strong> Proteger contra fraudes y actividades no autorizadas</li>
@@ -104,7 +102,8 @@ export default function PrivacyPage() {
                 No vendemos su información personal a terceros. Podemos compartir su información en las siguientes circunstancias:
               </p>
               <ul className="list-disc pl-6 text-gray-700 space-y-2 mb-4">
-                <li><strong>Proveedores de servicio:</strong> Compartimos la información necesaria con proveedores que nos ayudan a operar nuestro negocio, incluyendo procesamiento de pagos, mensajería, infraestructura tecnológica y servicios de inteligencia artificial</li>
+                <li><strong>Proveedores de servicio:</strong> Compartimos información con proveedores que nos ayudan a operar 
+                nuestro negocio (procesamiento de pagos, plataformas tecnológicas, etc.)</li>
                 <li><strong>Personal operativo:</strong> Nuestros conductores y personal de carga reciben la información 
                 necesaria para completar el servicio</li>
                 <li><strong>Obligaciones legales:</strong> Cuando sea requerido por ley o por autoridades competentes</li>
@@ -207,8 +206,8 @@ export default function PrivacyPage() {
               </p>
               <ul className="list-none text-gray-700 space-y-2">
                 <li><strong>Email:</strong> contacto@yomeencargo.cl</li>
-                <li><strong>Teléfono:</strong> +56 9 5439 0267</li>
-                <li><strong>WhatsApp:</strong> +56 9 5439 0267</li>
+                <li><strong>Teléfono:</strong> +56 9 5233 4799</li>
+                <li><strong>WhatsApp:</strong> +56 9 5233 4799</li>
                 <li><strong>Horario de atención:</strong> Lunes a Domingo, 9:00 - 19:00 hrs</li>
               </ul>
             </section>
@@ -230,4 +229,3 @@ export default function PrivacyPage() {
     </>
   )
 }
-

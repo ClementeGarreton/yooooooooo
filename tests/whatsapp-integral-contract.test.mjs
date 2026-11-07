@@ -11,9 +11,9 @@ test('cotizaciones Whatsapp enlazan test97 y mantienen session + token', () => {
   assert.match(webhook, /session=\$\{encodeURIComponent\(session\.id\)\}/)
   assert.match(webhook, /token=\$\{encodeURIComponent\(session\.resume_token\)\}/)
 })
-test('Flow devuelve a test97 por defecto sin rehacer su pasarela', () => {
+test('Flow conserva su pasarela y obtiene URL desde el sitio configurado', () => {
   const file = read('src/lib/quoteCheckout.ts')
-  assert.match(file, /yo-me-encargo-test97\.vercel\.app/)
+  assert.match(file, /siteUrl\(\)/)
   assert.match(file, /flowService\.createPayment/)
 })
 test('guardar originales por ID de mensaje y persistir rutas en state', () => {

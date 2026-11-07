@@ -1,5 +1,6 @@
 'use client'
 
+import PanelLogo from '@/components/PanelLogo'
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Card from '@/components/ui/Card'
@@ -61,15 +62,14 @@ export default function AdminLogin() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center p-4">
+    <div className="theme-panel min-h-screen bg-slate-50 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         {/* Logo/Header */}
         <div className="text-center mb-8">
-          <div className="w-16 h-16 bg-primary-600 rounded-full flex items-center justify-center mx-auto mb-4">
-            <Lock className="w-8 h-8 text-white" />
-          </div>
-          <h1 className="text-2xl font-bold text-gray-900">Panel de Administración</h1>
-          <p className="text-gray-600 mt-2">Acceso restringido</p>
+          <PanelLogo size={80} className="mx-auto mb-4 shadow-sm" />
+          <p className="text-sm font-bold text-brand-blue-dark">Yo me encargo!</p>
+          <h1 className="mt-1 text-2xl font-bold text-slate-900">Administración</h1>
+          <p className="text-slate-500 mt-2">Acceso del equipo</p>
         </div>
 
         {/* Login Form */}
@@ -158,15 +158,6 @@ export default function AdminLogin() {
               className="text-primary-600 hover:text-primary-700 font-medium transition-colors"
             >
               vanlookstudio.com
-            </a>
-            {' '}· parte del sistema por{' '}
-            <a
-              href="https://iaenblanco.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-primary-600 hover:text-primary-700 font-medium transition-colors"
-            >
-              IAenBlanco
             </a>
           </p>
         </div>

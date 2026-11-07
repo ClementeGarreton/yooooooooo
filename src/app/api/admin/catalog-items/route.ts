@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
 import { getActorFromRequest, logAdminAction } from '@/lib/activityLog'
+import { hasAdminAction } from '@/lib/adminPermissions'
 
 // GET - Obtener todos los items del catálogo
 export async function GET() {
@@ -102,6 +103,9 @@ export async function POST(request: NextRequest) {
 // PUT - Actualizar un item existente
 export async function PUT(request: NextRequest) {
   try {
+    if (!(await hasAdminAction(request, 'inventory.adjust'))) {
+      return NextResponse.json({ error: 'Tu perfil solo puede agregar ítems al inventario, no editarlos ni borrarlos.' }, { status: 403 })
+    }
     const body = await request.json()
     const {
       id,
@@ -179,6 +183,9 @@ export async function PUT(request: NextRequest) {
 // DELETE - Eliminar un item (marcar como inactivo o eliminar físicamente)
 export async function DELETE(request: NextRequest) {
   try {
+    if (!(await hasAdminAction(request, 'inventory.adjust'))) {
+      return NextResponse.json({ error: 'Tu perfil solo puede agregar ítems al inventario, no editarlos ni borrarlos.' }, { status: 403 })
+    }
     const { searchParams } = new URL(request.url)
     const id = searchParams.get('id')
 

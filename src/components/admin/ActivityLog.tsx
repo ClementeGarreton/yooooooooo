@@ -1,5 +1,7 @@
 'use client'
 
+import PeriodFilter from './PeriodFilter'
+import { periodOf, resolvePeriod, type Period } from '@/lib/period'
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import Card from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
@@ -34,18 +36,60 @@ const ACTION_LABELS: Record<string, string> = {
   'booking.status_changed': 'Estado de reserva',
   'booking.rescheduled': 'Reserva reprogramada',
   'booking.payment_updated': 'Pago de reserva',
+  'booking.payment_registered': 'Pago registrado',
+  'booking.amount_adjusted': 'Monto reajustado',
+  'booking.balance_link_created': 'Link de pago del saldo',
+  'booking.address_changed': 'Dirección cambiada',
+  'booking.tax_document_changed': 'Documento tributario',
+  'booking.cleanup_deleted': 'Pre-reservas abandonadas borradas',
+  'booking.cleanup_rescued': 'Pre-reservas pagadas rescatadas',
+  'booking.vehicle_assigned': 'Camión asignado',
   'booking.deleted': 'Reserva eliminada',
   'prospect.status_changed': 'Estado de lead',
   'prospect.updated': 'Lead actualizado',
   'prospect.deleted': 'Lead eliminado',
   'prospect.quote_sent': 'Cotización enviada',
   'prospect.converted_to_booking': 'Lead convertido',
+  'prospect.admin_quote_created': 'Cotización del panel',
+  'prospect.items_repriced': 'Precios de artículos corregidos',
+  'customer.created': 'Cliente creado',
+  'customer.origin_changed': 'Origen de cliente',
   'customer.frequent_toggled': 'Cliente frecuente',
+  'customer.access_changed': 'Acceso de cliente cambiado',
+  'customer.login_link_sent': 'Link de acceso enviado',
+  'worker.created': 'Trabajador creado',
+  'worker.updated': 'Trabajador editado',
+  'worker.deactivated': 'Trabajador desactivado',
+  'worker.pin_changed': 'PIN de trabajador cambiado',
+  'booking.workers_changed': 'Cuadrilla cambiada',
+  'booking.modification_approved': 'Modificación en terreno aprobada',
+  'booking.modification_rejected': 'Modificación en terreno rechazada',
+  'service_request.approved': 'Solicitud aprobada',
+  'service_request.rejected': 'Solicitud rechazada',
+  'invoice.previewed': 'Factura previsualizada',
+  'invoice.emitted': 'Factura emitida',
+  'invoice.emit_attempted': 'Intento de emitir factura',
+  'coupon.created': 'Cupón creado',
+  'coupon.activated': 'Cupón activado',
+  'coupon.deactivated': 'Cupón desactivado',
+  'marketing.referrals_updated': 'Programa de referidos',
+  'preview.opened': 'Panel visto como la persona',
+  'profile.created': 'Perfil creado',
+  'profile.updated': 'Perfil editado',
+  'company.created': 'Empresa creada',
+  'company.updated': 'Empresa editada',
+  'company.member_added': 'Persona asociada a empresa',
+  'company.member_role_changed': 'Rol en empresa cambiado',
+  'company.member_removed': 'Persona quitada de empresa',
+  'company.bookings_assigned': 'Reservas asignadas a empresa',
+  'company.bookings_unassigned': 'Reservas quitadas de empresa',
   'auth.password_changed': 'Contraseña cambiada',
   'pricing.updated': 'Precios actualizados',
   'schedule.updated': 'Agenda actualizada',
   'fleet.updated': 'Flota actualizada',
+  'fleet.vehicle_details_updated': 'Ficha de camión actualizada',
   'driver_link.regenerated': 'Link choferes regenerado',
+  'driver_link.pin_changed': 'Clave de chofer cambiada',
   'blocked_slot.created': 'Horario bloqueado',
   'blocked_slot.deleted': 'Bloqueo liberado',
   'catalog.item_created': 'Item creado',
@@ -55,11 +99,19 @@ const ACTION_LABELS: Record<string, string> = {
   'user.updated': 'Usuario actualizado',
   'user.deactivated': 'Usuario desactivado',
   'user.password_reset': 'Contraseña reseteada',
+  'user.role_changed': 'Perfil de usuario cambiado',
 }
 
 const ENTITY_LABELS: Record<string, string> = {
   booking: 'Reservas',
   prospect: 'Leads',
+  company: 'Empresas',
+  worker: 'Trabajadores',
+  service_request: 'Solicitudes',
+  invoice: 'Facturas',
+  coupon: 'Cupones',
+  marketing: 'Marketing',
+  profile: 'Perfiles',
   auth: 'Sesiones',
 }
 
@@ -100,8 +152,11 @@ export default function ActivityLog() {
 
   const [actor, setActor] = useState('all')
   const [entity, setEntity] = useState('all')
-  const [from, setFrom] = useState('')
-  const [to, setTo] = useState('')
+  // El mismo control de fecha de todo el panel.
+  const [period, setPeriod] = useState<Period>(periodOf('all'))
+  const range = resolvePeriod(period)
+  const from = range.from || ''
+  const to = range.to || ''
   const [q, setQ] = useState('')
 
   const fetchEntries = useCallback(
@@ -191,19 +246,22 @@ export default function ActivityLog() {
             Registro de lo que hace cada usuario en el panel · se conserva 12 meses
           </p>
         </div>
-        <Button
-          onClick={handleExportCSV}
-          variant="outline"
-          size="sm"
-          disabled={entries.length === 0}
-        >
-          <Download className="w-4 h-4 mr-2" />
-          Exportar CSV
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <PeriodFilter value={period} onChange={setPeriod} presets={['all', 'day', 'week', 'month', 'custom']} />
+          <Button
+            onClick={handleExportCSV}
+            variant="outline"
+            size="sm"
+            disabled={entries.length === 0}
+          >
+            <Download className="w-4 h-4 mr-2" />
+            Exportar CSV
+          </Button>
+        </div>
       </div>
 
       <Card className="p-4">
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Usuario</label>
             <Select
@@ -232,14 +290,6 @@ export default function ActivityLog() {
                 { value: 'user', label: 'Usuarios' },
               ]}
             />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Desde</label>
-            <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Hasta</label>
-            <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Buscar</label>

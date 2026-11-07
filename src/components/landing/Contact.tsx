@@ -3,6 +3,7 @@
 import { Mail, Phone, Clock, MessageCircle, ArrowRight, Sparkles } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { trackEvent } from '@/lib/tracking'
+import { companyWhatsAppLink } from '@/lib/whatsapp'
 
 function WhatsAppIcon() {
   return (
@@ -25,9 +26,9 @@ export default function Contact() {
       icon: MessageCircle,
       customIcon: <WhatsAppIcon />,
       title: 'WhatsApp',
-      value: '+56 9 5439 0267',
+      value: '+56 9 5233 4799',
       description: 'Respuesta inmediata',
-      href: 'https://wa.me/56954390267',
+      href: companyWhatsAppLink(),
       gradient: 'from-green-500 to-emerald-600',
       bgGradient: 'from-green-50 to-emerald-50',
       iconBg: 'bg-gradient-to-br from-green-400 to-emerald-500',
@@ -36,9 +37,9 @@ export default function Contact() {
     {
       icon: Phone,
       title: 'Teléfono',
-      value: '+56 9 5439 0267',
+      value: '+56 9 5233 4799',
       description: 'Lunes a Domingo',
-      href: 'tel:+56954390267',
+      href: 'tel:+56952334799',
       gradient: 'from-blue-500 to-cyan-600',
       bgGradient: 'from-blue-50 to-cyan-50',
       iconBg: 'bg-gradient-to-br from-blue-400 to-cyan-500',
@@ -82,9 +83,9 @@ export default function Contact() {
           >
             <MessageCircle className="text-white" size={32} />
           </motion.div>
-          <h2 className="text-4xl md:text-5xl lg:text-6xl font-bold text-gray-900 mb-6">
+          <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold text-gray-900 mb-6">
             Contáctanos
-          </h2>
+          </h1>
           <p className="text-xl md:text-2xl text-gray-600 max-w-3xl mx-auto leading-relaxed">
             Estamos listos para ayudarte con tu mudanza o traslado
           </p>
@@ -209,4 +210,3 @@ export default function Contact() {
     </section>
   )
 }
-

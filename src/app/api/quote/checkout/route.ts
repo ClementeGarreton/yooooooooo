@@ -8,6 +8,9 @@ import {
   type PaymentType,
 } from '@/lib/quoteCheckout'
 import { resolveBookingAttribution } from '@/lib/attributionServer'
+import { CouponError, quoteCoupon, setQuoteCoupon } from '@/lib/coupons'
+import { customerIdByEmail } from '@/lib/webCoupon'
+import { webQuotePriceProblem } from '@/lib/server/webQuotePrice'
 
 // Crea (o reutiliza) la pre-reserva y genera la orden Flow para pagar EN LA PÁGINA.
 // Comparte la misma lógica que /api/prospects/send-quote => un solo booking por cotización.
@@ -21,8 +24,9 @@ export async function POST(request: NextRequest) {
       schedule,
       addresses,
       propertyDetails,
-      estimatedPrice,
+      estimatedPrice: listPrice,
       photoUrls,
+      stops,
     } = body as {
       quoteId: string
       paymentType: PaymentType
@@ -32,9 +36,10 @@ export async function POST(request: NextRequest) {
       propertyDetails?: any
       estimatedPrice: number
       photoUrls?: string[]
+      stops?: unknown
     }
 
-    if (!quoteId || !paymentType || !client?.email || !estimatedPrice) {
+    if (!quoteId || !paymentType || !client?.email || !listPrice) {
       return NextResponse.json({ error: 'Datos incompletos' }, { status: 400 })
     }
 
@@ -45,9 +50,29 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // El precio de lista llega del navegador: se compara con lo que da la fórmula sobre lo
+    // que el cliente declaró, antes de que cuente para el cupón o la pre-reserva.
+    const problemaPrecio = await webQuotePriceProblem('quote/checkout', quoteId, listPrice, body?.pricingInput)
+    if (problemaPrecio) return NextResponse.json({ error: problemaPrecio }, { status: 409 })
+
+    // Cupón o código de referido (opcional, campaña OCTUBRE): se valida de nuevo acá. El
+    // descuento se aplica ANTES del abono del 50% o del pago completo con 5%: la pre-reserva
+    // nace con el precio ya rebajado, igual que al reservar desde «Mi cuenta».
+    const couponCode = typeof body?.couponCode === 'string' ? body.couponCode.trim() : ''
+    let coupon: Awaited<ReturnType<typeof quoteCoupon>> | null = null
+    if (couponCode) {
+      try {
+        coupon = await quoteCoupon(couponCode, await customerIdByEmail(client.email), quoteId, listPrice)
+      } catch (error) {
+        if (error instanceof CouponError) return NextResponse.json({ error: error.message }, { status: error.status })
+        throw error
+      }
+    }
+    const estimatedPrice = coupon ? coupon.finalPrice : listPrice
+
     const attribution = await resolveBookingAttribution(body, quoteId)
 
-    const { locked } = await ensureProvisionalBooking({
+    const { locked, bookingRowId } = await ensureProvisionalBooking({
       quoteId,
       client,
       schedule,
@@ -56,7 +81,10 @@ export async function POST(request: NextRequest) {
       estimatedPrice,
       paymentType,
       photoUrls,
+      stops,
       attribution,
+      // Casilla «Estoy de acuerdo con las Políticas de Garantía» del resumen.
+      policiesAccepted: body?.policiesAccepted === true,
     })
 
     // Si ya está pagada, no generamos otra orden de Flow: evita que el cliente pague dos
@@ -67,6 +95,12 @@ export async function POST(request: NextRequest) {
         { status: 409 }
       )
     }
+
+    // El uso del cupón (o su retiro, si esta vez se paga sin cupón) queda registrado con la
+    // ficha del cliente, que la base crea sola con la pre-reserva.
+    const customerId = await customerIdByEmail(client.email)
+    if (customerId) await setQuoteCoupon(customerId, quoteId, listPrice, coupon, bookingRowId)
+    else if (coupon) console.warn('[quote/checkout] Cupón sin ficha de cliente para registrarlo:', quoteId)
 
     const amounts = computeQuoteAmounts(estimatedPrice)
     const amount = paymentType === 'completo' ? amounts.full95 : amounts.abono50
@@ -82,7 +116,7 @@ export async function POST(request: NextRequest) {
       subject,
     })
 
-    return NextResponse.json({ success: true, paymentUrl: order.url, amount })
+    return NextResponse.json({ success: true, paymentUrl: order.url, amount, finalPrice: estimatedPrice })
   } catch (error) {
     if (error instanceof SlotUnavailableError) {
       return NextResponse.json({ error: error.message }, { status: 409 })

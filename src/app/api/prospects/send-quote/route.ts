@@ -8,33 +8,47 @@ import {
   SlotUnavailableError,
 } from '@/lib/quoteCheckout'
 import { resolveBookingAttribution } from '@/lib/attributionServer'
-import { postQuoteWebhook } from '@/lib/n8nClient'
+import { n8nConfirmedSuccess } from '@/lib/n8nClient'
+import { sendSystemEmail } from '@/lib/emailTransport'
+import { webQuotePriceProblem } from '@/lib/server/webQuotePrice'
 
 // Envío REAL de la cotización por correo:
 //  1) garantiza la pre-reserva (sin consumir cupo)
 //  2) genera el link de pago de Flow (abono 50%)
 //  3) hace POST a n8n con todo el payload (PDF + link de pago) => n8n manda el correo
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const {
-      quoteId,
-      prospectId,
-      pdfUrl: pdfUrlFromClient,
-      client,
-      schedule,
-      addresses,
-      propertyDetails,
-      estimatedPrice,
-      details,
-      photoUrls,
-    } = body
+    const { quoteId, prospectId, schedule, addresses, propertyDetails, details, photoUrls, stops } = body
 
-    if (!quoteId || !client?.email || !client?.name || !estimatedPrice) {
-      return NextResponse.json({ error: 'Datos incompletos' }, { status: 400 })
+    if (!quoteId || !UUID_RE.test(String(prospectId || ''))) {
+      return NextResponse.json({ error: 'No pudimos guardar tu cotización. Vuelve a intentarlo.' }, { status: 400 })
     }
 
-    if (prospectId) {
+    // Destinatario, nombre, precio y PDF salen de la cotización guardada, no del cuerpo: antes
+    // esta ruta mandaba desde nuestro dominio un correo con lo que le enviaran, a cualquiera.
+    const { data: prospect, error: prospectError } = await supabaseAdmin
+      .from('quote_prospects')
+      .select('id, quote_id, name, email, total_price, pdf_url, quote_state')
+      .eq('id', prospectId)
+      .maybeSingle()
+    if (prospectError) throw prospectError
+    if (!prospect?.email || !prospect.name || !prospect.total_price) {
+      return NextResponse.json({ error: 'No encontramos tu cotización. Vuelve a intentarlo.' }, { status: 404 })
+    }
+    if (prospect.quote_id && prospect.quote_id !== quoteId) {
+      return NextResponse.json({ error: 'Esta cotización cambió. Vuelve al resumen e inténtalo de nuevo.' }, { status: 409 })
+    }
+    const client = { ...(body.client || {}), name: prospect.name, email: prospect.email }
+    const estimatedPrice = Number(prospect.total_price)
+
+    // El precio guardado también lo calculó el navegador, y de acá sale el link de pago.
+    const problemaPrecio = await webQuotePriceProblem('send-quote', quoteId, estimatedPrice, prospect.quote_state)
+    if (problemaPrecio) return NextResponse.json({ error: problemaPrecio }, { status: 409 })
+
+    if (!prospect.quote_id) {
       const { error: linkError } = await supabaseAdmin
         .from('quote_prospects')
         .update({
@@ -59,7 +73,11 @@ export async function POST(request: NextRequest) {
       estimatedPrice,
       paymentType: 'mitad',
       photoUrls,
+      stops,
       attribution,
+      // La casilla del envío por correo incluye las Políticas de Garantía: el cliente
+      // puede reservar pagando desde el enlace del correo sin volver a la página.
+      policiesAccepted: body?.policiesAccepted === true,
     })
 
     // 2) Link de pago de Flow (best-effort): el correo con el PDF NO debe depender
@@ -87,21 +105,13 @@ export async function POST(request: NextRequest) {
       console.error('[send-quote] Flow falló; se envía el correo sin link de pago:', flowError)
     }
 
-    // 3) Resolver la URL del PDF (la del cliente o la guardada en el prospecto)
-    let pdfUrl: string | null = pdfUrlFromClient || null
-    if (!pdfUrl && prospectId) {
-      const { data } = await supabaseAdmin
-        .from('quote_prospects')
-        .select('pdf_url')
-        .eq('id', prospectId)
-        .maybeSingle()
-      pdfUrl = data?.pdf_url || null
-    }
+    // 3) El PDF guardado en la cotización.
+    const pdfUrl: string | null = prospect.pdf_url || null
 
     // Payload para n8n
     const payload = {
       event: 'quote_email_requested',
-      prospect_id: prospectId || null,
+      prospect_id: prospectId,
       quote_id: quoteId,
       cliente: {
         nombre: client.name,
@@ -134,15 +144,29 @@ export async function POST(request: NextRequest) {
       },
     }
 
-    const result = await postQuoteWebhook(payload, { label: 'cliente' })
+    const result = await sendSystemEmail(payload, { label: 'cliente' })
 
-    if (!result.ok) {
-      // El motivo concreto ya quedó logueado en n8nClient (timeout/red/HTTP).
+    // No alcanza con `result.ok`: el webhook usa `responseMode: responseNode`, así que
+    // si un nodo del workflow muere a mitad de camino n8n contesta HTTP 200 con el
+    // cuerpo VACÍO y el correo nunca salió. La única señal de que el envío se completó
+    // es el `{"success": true}` del nodo `Respond to Webhook`, que solo corre después
+    // del nodo de envío. Sin esto le decimos "cotización enviada" a alguien que no
+    // recibió nada.
+    if (!n8nConfirmedSuccess(result)) {
+      // El motivo concreto ya quedó logueado en n8nClient (timeout/red/HTTP/sin confirmación).
       return NextResponse.json(
         { error: 'No se pudo enviar la cotización por correo. Intenta de nuevo.' },
         { status: 502 }
       )
     }
+
+    // Marca de «ya se le mandó la cotización». Solo con envío confirmado, igual que en el
+    // panel: la usa el cron para no mandar el #01 automático encima de este correo.
+    const { error: marcaError } = await supabaseAdmin
+      .from('quote_prospects')
+      .update({ quote_sent_at: new Date().toISOString() })
+      .eq('id', prospectId)
+    if (marcaError) console.error('[send-quote] No se pudo marcar quote_sent_at:', marcaError)
 
     return NextResponse.json({ success: true, paymentUrl })
   } catch (error) {

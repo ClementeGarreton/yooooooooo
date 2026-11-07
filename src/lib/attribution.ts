@@ -12,6 +12,10 @@
  * Los endpoints que crean `quote_prospects` y `bookings` leen `readAttribution()` y lo
  * mandan en el body del submit, para guardar el gclid junto a la conversion.
  *
+ * Quien llega sin clic pero desde otro sitio (Google organico, Maps, redes, asistentes de
+ * IA) tambien deja su touchpoint, y la cotizacion guarda el visitor id: asi el dashboard
+ * sabe de donde vino aunque no sea un anuncio (ver externalReferrerHost).
+ *
  * NO se envia PII (nombre/email/telefono) al collector: solo gclid + parametros de URL.
  */
 
@@ -22,6 +26,22 @@ const MAXAGE_DAYS = 90
 const SITE_KEY = 'vla_yomeencargo_f638fa277a2b11b6ed0d57e8d0c3f2df'
 const COLLECT_URL = 'https://data.vanlookstudio.com/api/attribution/collect'
 const VID_COOKIE = '_vla'
+
+// Sitios desde los que se vuelve pero que no son un origen: el propio, los pagos y los logins.
+const NOT_AN_ORIGIN = /(^|\.)(yomeencargo\.cl|flow\.cl|webpay\.cl|transbank\.cl|mercadopago\.(cl|com)|accounts\.google\.com)$/
+const REFERRAL_SENT_KEY = 'yme_attr_referral'
+
+/** Host del sitio externo que trajo la visita, o null si no es un origen (ni el propio). */
+export function externalReferrerHost(referrer: string | null | undefined, ownHost: string): string | null {
+  if (!referrer) return null
+  let host: string
+  try {
+    host = new URL(referrer).hostname.toLowerCase()
+  } catch {
+    return null
+  }
+  return host && host !== ownHost.toLowerCase() && !NOT_AN_ORIGIN.test(host) ? host : null
+}
 
 export interface Attribution {
   gclid?: string | null
@@ -73,7 +93,10 @@ export function captureAttribution(): void {
   const hasClick = Boolean(
     incoming.gclid || incoming.gbraid || incoming.wbraid || incoming.utm_source
   )
-  if (!hasClick) return
+  if (!hasClick) {
+    sendReferralTouchpoint(incoming)
+    return
+  }
 
   try {
     localStorage.setItem(ATTR_KEY, JSON.stringify({ ...incoming, ts: Date.now() }))
@@ -125,6 +148,7 @@ export function attributionForSubmit(): {
   wbraid: string | null
   utm_source: string | null
   utm_campaign: string | null
+  visitor_id: string | null
 } {
   const a = readAttribution()
   return {
@@ -133,7 +157,25 @@ export function attributionForSubmit(): {
     wbraid: a.wbraid ?? null,
     utm_source: a.utm_source ?? null,
     utm_campaign: a.utm_campaign ?? null,
+    visitor_id: typeof window === 'undefined' ? null : getVisitorId(),
   }
+}
+
+/**
+ * Visita sin clic que llega desde otro sitio: deja su touchpoint, una vez por sesion, sin
+ * tocar la atribucion guardada (un clic de pago anterior se conserva). Una visita directa
+ * no es un origen y no se registra.
+ */
+function sendReferralTouchpoint(a: Attribution): void {
+  const host = externalReferrerHost(a.referrer, window.location.hostname)
+  if (!host) return
+  try {
+    if (sessionStorage.getItem(REFERRAL_SENT_KEY) === host) return
+    sessionStorage.setItem(REFERRAL_SENT_KEY, host)
+  } catch {
+    // Storage bloqueado: el collector deduplica por su cuenta.
+  }
+  sendTouchpoint(a)
 }
 
 /** Visitor id estable (cookie `_vla`, 90 dias) para deduplicar touchpoints. */

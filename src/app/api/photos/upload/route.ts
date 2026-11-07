@@ -1,5 +1,7 @@
+import { siteBaseUrl, toHiddenFileUrl } from '@/lib/fileLinks'
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
+import { sniffFileType } from '@/lib/documents'
 
 /**
  * API endpoint para subir fotos de items/propiedades a Supabase Storage
@@ -70,7 +72,6 @@ export async function POST(request: NextRequest) {
     }
 
     const uploadedUrls: string[] = []
-    const uploadTimestamp = Date.now()
 
     // Subir cada archivo
     for (let i = 0; i < files.length; i++) {
@@ -81,17 +82,25 @@ export async function POST(request: NextRequest) {
       const arrayBuffer = await file.arrayBuffer()
       const buffer = Buffer.from(arrayBuffer)
 
-      // Generar nombre único para el archivo
-      const fileExtension = file.name.split('.').pop() || 'jpg'
-      const fileName = `${uploadTimestamp}_${i + 1}.${fileExtension}`
-      const filePath = `photos/${fileName}`
+      // (Auditoría 2026-11-04 §6.6/N10) El nombre que declara el navegador no prueba
+      // nada y el timestamp anterior hacía las rutas enumerables: el tipo real sale de
+      // los primeros bytes y la ruta de un UUID, así que nadie puede adivinar la foto
+      // de otra persona probando marcas de tiempo.
+      const sniffed = sniffFileType(buffer)
+      if (!sniffed || !['image/jpeg', 'image/png', 'image/webp'].includes(sniffed.mime)) {
+        return NextResponse.json(
+          { error: 'Solo se permiten archivos JPG, PNG o WEBP' },
+          { status: 400 }
+        )
+      }
+      const filePath = `photos/${globalThis.crypto.randomUUID()}.${sniffed.ext}`
 
       // Subir a Supabase Storage
       const { data: uploadData, error: uploadError } = await supabaseAdmin
         .storage
         .from('bookings')
         .upload(filePath, buffer, {
-          contentType: file.type,
+          contentType: sniffed.mime,
           upsert: false
         })
 
@@ -114,7 +123,8 @@ export async function POST(request: NextRequest) {
         .from('bookings')
         .getPublicUrl(filePath)
 
-      uploadedUrls.push(urlData.publicUrl)
+      // Se devuelve (y después se guarda) el link del sitio, no el del almacenamiento.
+      uploadedUrls.push(toHiddenFileUrl(urlData.publicUrl, siteBaseUrl() || request.nextUrl.origin))
       console.log(`[upload-photos] Foto ${i + 1} subida exitosamente`)
     }
 

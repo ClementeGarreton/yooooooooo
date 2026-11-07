@@ -1,10 +1,16 @@
 import type { AdminQuoteData } from './adminQuotePdf'
+import { normalizeStops } from './stops'
 
 export type AdminPdfItem = {
   name: string
   quantity: number
   volume: number
-  packaging: { type: string } | undefined
+  /**
+   * `pricePerUnit` es el precio por m³ del embalaje congelado al cotizar. Se
+   * conserva (antes se descartaba) porque el panel ahora lo muestra y permite
+   * corregirlo sin rehacer la cotización.
+   */
+  packaging: { type: string; pricePerUnit?: number } | undefined
 }
 
 export interface BookingQuoteDetails {
@@ -29,6 +35,7 @@ export interface BookingQuoteDetails {
   destination_parking_distance?: number | null
   items_summary?: unknown
   additional_services?: unknown
+  lead_key?: string | null
 }
 
 export interface AdminBookingQuoteSource {
@@ -57,7 +64,23 @@ export interface AdminBookingQuoteSource {
   destination_parking_distance?: number | null
   scheduled_date?: string | null
   scheduled_time?: string | null
+  /** Nota escrita en el panel sobre esta reserva. Sale en los dos PDF. */
+  notes?: string | null
+  /** Paradas intermedias (JSONB). */
+  stops?: unknown
+  /** Notas del chofer, adjuntadas por /api/admin/bookings. Solo van a la orden de trabajo. */
+  driver_notes?: Array<{
+    note: string
+    vehicle_label?: string | null
+    created_at?: string | null
+  }> | null
+  /** Código legible de la reserva (RES-000001). Lo pone la base; ausente sin la migración. */
+  code?: string | null
+  /** Cliente al que pertenece (tabla customers). Ausente sin la migración. */
+  customer_id?: string | null
   total_price?: number | string | null
+  original_price?: number | string | null
+  adjusted_price?: number | string | null
   is_flexible?: boolean | null
   recommended_vehicle?: string | null
   total_volume?: number | string | null
@@ -103,6 +126,12 @@ function normalizeEmail(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase() : ''
 }
 
+function normalizeCustomerOrigin(value: unknown): string {
+  return value === 'cliente_antiguo' || value === 'rrss' || value === 'recomendacion'
+    ? value
+    : 'web'
+}
+
 function scheduleKey(email: unknown, date: unknown, time: unknown): string {
   const normalizedEmail = normalizeEmail(email)
   const normalizedDate = normalizeDate(date)
@@ -118,15 +147,23 @@ function normalizeAdditionalServices(value: unknown): Record<string, any> | unde
   return parsed as Record<string, any>
 }
 
-export function normalizeAdminPdfItems(
+/**
+ * Igual que `normalizeAdminPdfItems`, pero conservando la posición original dentro
+ * de `items_summary`. El editor de precios del panel la necesita: la normalización
+ * descarta filas corruptas, así que sin el índice no habría forma de escribir el
+ * precio sobre la fila correcta del JSON guardado.
+ */
+export type IndexedAdminPdfItem = AdminPdfItem & { sourceIndex: number }
+
+export function normalizeAdminPdfItemsWithIndex(
   value: unknown,
   totalVolume?: number | string | null
-): AdminPdfItem[] {
+): IndexedAdminPdfItem[] {
   const parsed = parseJsonValue(value)
   if (!Array.isArray(parsed)) return []
 
   const items = parsed
-    .map((item) => {
+    .map((item, sourceIndex): IndexedAdminPdfItem | null => {
       if (!item || typeof item !== 'object') return null
       const record = item as Record<string, unknown>
       const name = normalizeText(record.name)
@@ -135,10 +172,14 @@ export function normalizeAdminPdfItems(
       if (!name || quantity <= 0 || volume < 0) return null
       const packagingRecord = record.packaging as Record<string, unknown> | undefined
       const packagingType = packagingRecord ? normalizeText(packagingRecord.type) : undefined
-      const packaging = packagingType && packagingType !== 'none' ? { type: packagingType } : undefined
-      return { name, quantity, volume, packaging }
+      const packagingPrice = packagingRecord ? toNumber(packagingRecord.pricePerUnit) : undefined
+      const packaging =
+        packagingType && packagingType !== 'none'
+          ? { type: packagingType, pricePerUnit: packagingPrice }
+          : undefined
+      return { name, quantity, volume, packaging, sourceIndex }
     })
-    .filter((item): item is AdminPdfItem => Boolean(item))
+    .filter((item): item is IndexedAdminPdfItem => Boolean(item))
 
   if (items.length === 0) return []
 
@@ -157,6 +198,25 @@ export function normalizeAdminPdfItems(
     ...item,
     volume: rawLooksLikeLineTotals ? item.volume / item.quantity : item.volume,
   }))
+}
+
+export function normalizeAdminPdfItems(
+  value: unknown,
+  totalVolume?: number | string | null
+): AdminPdfItem[] {
+  return normalizeAdminPdfItemsWithIndex(value, totalVolume).map(
+    ({ sourceIndex: _sourceIndex, ...item }) => item
+  )
+}
+
+/** Volumen disponible para la lista de reservas, con respaldo en el detalle de ítems. */
+export function bookingVolumeM3(booking: AdminBookingQuoteSource): number | undefined {
+  const direct = toNumber(booking.total_volume)
+  if (direct !== undefined && direct >= 0) return direct
+
+  const items = normalizeAdminPdfItems(booking.items_summary)
+  if (items.length === 0) return undefined
+  return items.reduce((sum, item) => sum + item.volume * item.quantity, 0)
 }
 
 function pickQuoteDetails(prospect?: BookingQuoteDetails): Partial<AdminBookingQuoteSource> {
@@ -196,6 +256,10 @@ export function mergeBookingQuoteDetails<T extends AdminBookingQuoteSource>(
   const byBookingId = new Map<string, BookingQuoteDetails>()
   const byQuoteId = new Map<string, BookingQuoteDetails>()
   const bySchedule = new Map<string, BookingQuoteDetails>()
+  const customerByEmail = new Map<
+    string,
+    Pick<BookingQuoteDetails, 'source' | 'is_frequent'> & { priority: number }
+  >()
 
   prospects.forEach((prospect) => {
     const convertedBookingId = normalizeText(prospect.converted_booking_id)
@@ -212,6 +276,19 @@ export function mergeBookingQuoteDetails<T extends AdminBookingQuoteSource>(
     if (key && !bySchedule.has(key)) {
       bySchedule.set(key, prospect)
     }
+
+    const email = normalizeEmail(prospect.email)
+    if (email) {
+      const existing = customerByEmail.get(email)
+      const nextOrigin = normalizeCustomerOrigin(prospect.source)
+      const isManualCustomer = String(prospect.lead_key || '').startsWith('manual_customer:')
+      const priority = isManualCustomer ? 3 : nextOrigin === 'cliente_antiguo' ? 2 : 1
+      customerByEmail.set(email, {
+        source: !existing || priority >= existing.priority ? nextOrigin : existing.source,
+        is_frequent: Boolean(existing?.is_frequent) || Boolean(prospect.is_frequent),
+        priority: Math.max(priority, existing?.priority || 0),
+      })
+    }
   })
 
   return bookings.map((booking) => {
@@ -220,11 +297,19 @@ export function mergeBookingQuoteDetails<T extends AdminBookingQuoteSource>(
       (booking.quote_id ? byQuoteId.get(booking.quote_id) : undefined) ||
       bySchedule.get(scheduleKey(booking.client_email, booking.scheduled_date, booking.scheduled_time))
 
-    if (!prospect) return booking
-    return {
+    const customer = customerByEmail.get(normalizeEmail(booking.client_email))
+    if (!prospect && !customer) return booking
+
+    const merged = {
       ...booking,
       ...pickQuoteDetails(prospect),
     }
+    if (customer?.priority === 3 || customer?.source === 'cliente_antiguo' || !merged.source) {
+      merged.source = customer?.source || merged.source
+    }
+    if (customer?.is_frequent) merged.is_frequent = true
+    if (!merged.from_prospect && customer) merged.from_prospect = true
+    return merged
   })
 }
 
@@ -246,13 +331,20 @@ export function bookingToAdminQuoteData(booking: AdminBookingQuoteSource): Admin
     destinationParkingDistance: booking.destination_parking_distance ?? undefined,
     scheduledDate: booking.scheduled_date,
     scheduledTime: booking.scheduled_time,
-    totalPrice: toNumber(booking.total_price),
+    totalPrice:
+      toNumber(booking.adjusted_price) ??
+      toNumber(booking.original_price) ??
+      toNumber(booking.total_price),
     isFlexible: booking.is_flexible || false,
     recommendedVehicle: booking.recommended_vehicle,
-    totalVolume: toNumber(booking.total_volume),
+    totalVolume: bookingVolumeM3(booking),
     totalWeight: toNumber(booking.total_weight),
     totalDistance: toNumber(booking.total_distance),
     items: normalizeAdminPdfItems(booking.items_summary, booking.total_volume),
     additionalServices: normalizeAdditionalServices(booking.additional_services),
+    notes: booking.notes,
+    code: booking.code,
+    stops: normalizeStops(booking.stops),
+    driverNotes: booking.driver_notes || [],
   }
 }

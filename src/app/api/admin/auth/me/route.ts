@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
 import { ENV_ADMIN_ID, normalizeUsername } from '@/lib/adminAuth'
+import { getAdminAccess, getAdminRole } from '@/lib/adminPermissions'
+import { FULL_ACCESS } from '@/lib/adminAccess'
 
 export const dynamic = 'force-dynamic'
 
@@ -21,6 +23,8 @@ export async function GET(request: NextRequest) {
         displayName: 'Administrador',
         mustChangePassword: false,
         canChangePassword: false,
+        role: 'administrator',
+        access: FULL_ACCESS,
       })
     }
 
@@ -30,11 +34,18 @@ export async function GET(request: NextRequest) {
       .eq('username', username)
       .maybeSingle()
 
+    const role = await getAdminRole(request)
+    // Qué módulos y acciones tiene según su perfil: el menú se arma con esto. Es solo para
+    // mostrar; lo que de verdad manda es el candado del servidor.
+    const access = await getAdminAccess(request)
+
     return NextResponse.json({
       username,
       displayName: user?.display_name || username,
       mustChangePassword: Boolean(user?.must_change_password),
       canChangePassword: true,
+      role,
+      access,
     })
   } catch (error) {
     console.error('Error en /api/admin/auth/me:', error)

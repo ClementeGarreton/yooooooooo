@@ -1,12 +1,15 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { getPricingConfig } from '@/lib/pricingService'
-import { calculateDistanceByAddresses } from '@/lib/mapsService'
+import { calculateRouteDistance } from '@/lib/mapsService'
+import { calculateQuote } from '@/lib/quotePricing'
 
 export interface PersonalInfo {
   name: string
   email: string
   phone: string
+  /** RUT de la persona. Opcional: se guarda como «declarado» para su cuenta de cliente. */
+  rut?: string
   isCompany: boolean
   companyName?: string
   companyRut?: string
@@ -22,6 +25,19 @@ export interface Address {
     lat: number
     lng: number
   }
+}
+
+/**
+ * Parada intermedia entre el origen y el destino. El camión pasa por ellas en orden.
+ * `note` es para que el chofer sepa qué hace ahí (cargar, dejar, retirar algo).
+ */
+export interface Stop {
+  street: string
+  number: string
+  commune: string
+  region: string
+  additionalInfo?: string
+  note?: string
 }
 
 export interface PropertyDetails {
@@ -62,6 +78,25 @@ export interface AdditionalServices {
   unpacking: boolean
   observations: string
   photos: string[]
+  /**
+   * Ayudantes que el cliente agrega POR SOBRE los que el peso ya obliga a mandar.
+   * Más gente = más rápido y con más cuidado; no reemplaza a la cuadrilla mínima.
+   */
+  extraHelpers: number
+  /**
+   * Desarmado de refrigerador. Solo se ofrece si hay un refrigerador entre los items
+   * (ver `hasFridge`); si el cliente lo saca de la lista después de haberlo marcado,
+   * el cargo se cae solo en el cálculo.
+   */
+  fridgeDisassembly: boolean
+  /** Priority: agenda libre con horario flexible, por encima de la disponibilidad normal. */
+  priority: boolean
+  /**
+   * Hay muebles o bultos grandes que no caben en el ascensor y van por la escalera, aunque
+   * el edificio tenga ascensor. No cambia el precio: es un aviso para el equipo.
+   * Opcional: las cotizaciones guardadas antes de oct-2026 no lo traen.
+   */
+  stairsCarry?: boolean
 }
 
 export interface QuoteState {
@@ -76,6 +111,8 @@ export interface QuoteState {
     address: Address | null
     details: PropertyDetails | null
   }
+  /** Paradas intermedias, en el orden en que el camión pasa por ellas. */
+  stops: Stop[]
   items: Item[]
   additionalServices: AdditionalServices
   totalVolume: number
@@ -83,6 +120,12 @@ export interface QuoteState {
   totalDistance: number // km calculados (real o estimado)
   estimatedPrice: number
   recommendedVehicle: string
+  /** Personas que el peso obliga a mandar (sin contar los ayudantes agregados). */
+  requiredCrew: number
+  /** Cuadrilla total cotizada: obligatorias + ayudantes extra. */
+  totalCrew: number
+  /** Viajes por escalera que implica la cantidad de bultos. */
+  stairTrips: number
   isConfirmed: boolean
 
   // Actions
@@ -92,14 +135,14 @@ export interface QuoteState {
   setDestinationAddress: (address: Address) => void
   setOriginDetails: (details: PropertyDetails) => void
   setDestinationDetails: (details: PropertyDetails) => void
+  setStops: (stops: Stop[]) => void
   addItem: (item: Item) => void
   updateItem: (id: string, item: Partial<Item>) => void
   removeItem: (id: string) => void
   setAdditionalServices: (services: AdditionalServices) => void
-  calculateTotals: () => void
+  calculateTotals: () => Promise<void>
   setConfirmed: (confirmed: boolean) => void
   resetQuote: () => void
-  hydrateQuote: (state: Partial<Pick<QuoteState, 'personalInfo' | 'dateTime' | 'isFlexible' | 'origin' | 'destination' | 'items' | 'additionalServices' | 'totalVolume' | 'totalWeight' | 'totalDistance' | 'estimatedPrice' | 'recommendedVehicle' | 'isConfirmed'>>) => void
 }
 
 const initialState = {
@@ -114,6 +157,7 @@ const initialState = {
     address: null,
     details: null,
   },
+  stops: [],
   items: [],
   additionalServices: {
     disassembly: false,
@@ -122,12 +166,19 @@ const initialState = {
     unpacking: false,
     observations: '',
     photos: [],
+    extraHelpers: 0,
+    fridgeDisassembly: false,
+    priority: false,
+    stairsCarry: false,
   },
   totalVolume: 0,
   totalWeight: 0,
   totalDistance: 0,
   estimatedPrice: 0,
   recommendedVehicle: 'Camioneta',
+  requiredCrew: 1,
+  totalCrew: 1,
+  stairTrips: 1,
   isConfirmed: false,
 }
 
@@ -149,6 +200,8 @@ export const useQuoteStore = create<QuoteState>()(
         set((state) => ({
           destination: { ...state.destination, address },
         })),
+
+      setStops: (stops) => set({ stops }),
 
       setOriginDetails: (details) =>
         set((state) => ({
@@ -185,115 +238,55 @@ export const useQuoteStore = create<QuoteState>()(
       calculateTotals: async () => {
         const state = get()
 
-        // Obtener configuración de precios dinámicamente
+        // Este método NO calcula el precio: junta el contexto que el cálculo necesita
+        // —la configuración vigente y la distancia real de la ruta— y se lo pasa a
+        // `calculateQuote`, que es la única fórmula del sistema. Así el chatbot, que
+        // cotiza sin navegador, llama al mismo cálculo por `/api/quote/calculate` en vez
+        // de reimplementarlo y separarse el día que Tomás edita los precios.
         const pricing = await getPricingConfig()
 
-        const totalVolume = state.items.reduce(
-          (sum, item) => sum + item.volume * item.quantity,
-          0
-        )
-        const totalWeight = state.items.reduce(
-          (sum, item) => sum + item.weight * item.quantity,
-          0
-        )
-
-        // Determinar vehículo recomendado
-        let recommendedVehicle = 'Camioneta'
-        if (totalVolume > 20) recommendedVehicle = 'Furgón Grande'
-        else if (totalVolume > 10) recommendedVehicle = 'Furgón Mediano'
-        else if (totalVolume > 5) recommendedVehicle = 'Camioneta Grande'
-
-        // Calcular distancia real
         let distance = 10 // km por defecto
 
         if (state.origin.address && state.destination.address) {
           try {
-            distance = await calculateDistanceByAddresses(
-              state.origin.address.street,
-              state.origin.address.number,
-              state.origin.address.commune,
-              state.origin.address.region,
-              state.destination.address.street,
-              state.destination.address.number,
-              state.destination.address.commune,
-              state.destination.address.region
-            )
+            // La ruta pasa por las paradas en orden. Sin paradas, `calculateRouteDistance`
+            // hace exactamente el mismo cálculo directo que antes.
+            distance = await calculateRouteDistance([
+              state.origin.address,
+              ...(state.stops || []),
+              state.destination.address,
+            ])
           } catch (error) {
             console.error('Error calculating distance:', error)
             // Usar distancia por defecto si falla
           }
         }
 
-        // Cálculo de precio base usando configuración dinámica
-        let basePrice = pricing.basePrice
-
-        // Precio por volumen
-        basePrice += totalVolume * pricing.pricePerCubicMeter
-
-        // Ajuste por distancia (solo cobrar km adicionales después de los km gratis)
-        const freeKilometers = pricing.freeKilometers || 50
-        const chargeableKm = Math.max(0, distance - freeKilometers)
-        basePrice += chargeableKm * pricing.pricePerKilometer
-
-        // Ajuste por piso sin ascensor
-        if (state.origin.details && !state.origin.details.hasElevator) {
-          basePrice += state.origin.details.floor * pricing.floorSurcharge
-        }
-        if (state.destination.details && !state.destination.details.hasElevator) {
-          basePrice += state.destination.details.floor * pricing.floorSurcharge
-        }
-
-        // Cargo por fin de semana: sábado (6) y domingo (0) con el mismo porcentaje
-        if (state.dateTime) {
-          const dayOfWeek = new Date(state.dateTime).getDay()
-          if (dayOfWeek === 6 || dayOfWeek === 0) {
-            basePrice += (basePrice * pricing.timeSurcharges.saturday) / 100
-          }
-        }
-
-        // Servicios adicionales
-        if (state.additionalServices.disassembly) basePrice += pricing.additionalServices.disassembly
-        if (state.additionalServices.assembly) basePrice += pricing.additionalServices.assembly
-        // packing y unpacking requieren contacto con ejecutivo, no se suman al precio
-
-        // Costo de embalaje especial - CORREGIDO: se calcula por volumen de items con embalaje
-        // Agrupar items por tipo de embalaje y calcular el volumen específico de cada tipo
-        const packagingCost = state.items
-          .filter(item => item.packaging && item.packaging.type !== 'none')
-          .reduce((acc, item) => {
-            const itemVolume = item.volume * item.quantity
-            const itemPackagingCost = item.packaging?.pricePerUnit || 0
-            return acc + (itemPackagingCost * itemVolume)
-          }, 0)
-
-        basePrice += packagingCost
-
-        // Items frágiles o de vidrio
-        const fragileCount = state.items.filter((item) => item.isFragile || item.isGlass).length
-        basePrice += fragileCount * pricing.specialPackaging.fragile
-
-        // Descuento por flexibilidad
-        if (state.isFlexible) {
-          basePrice -= (basePrice * pricing.discounts.flexibility) / 100
-        }
-
-        // Agregar IVA si es empresa (factura)
-        if (state.personalInfo?.isCompany) {
-          basePrice = basePrice * 1.19
-        }
+        const result = calculateQuote({
+          items: state.items,
+          origin: state.origin.details,
+          destination: state.destination.details,
+          distanceKm: distance,
+          dateTime: state.dateTime,
+          isFlexible: state.isFlexible,
+          isCompany: state.personalInfo?.isCompany,
+          additionalServices: state.additionalServices,
+          pricing,
+        })
 
         set({
-          totalVolume,
-          totalWeight,
+          totalVolume: result.totalVolume,
+          totalWeight: result.totalWeight,
           totalDistance: distance,
-          estimatedPrice: Math.round(basePrice),
-          recommendedVehicle,
+          estimatedPrice: result.estimatedPrice,
+          recommendedVehicle: result.recommendedVehicle,
+          requiredCrew: result.requiredCrew,
+          totalCrew: result.totalCrew,
+          stairTrips: result.stairTrips,
         })
       },
 
       resetQuote: () => set(initialState),
-
-      hydrateQuote: (state) => set((current) => ({ ...current, ...state })),
     }),
     {
       name: 'quote-storage',

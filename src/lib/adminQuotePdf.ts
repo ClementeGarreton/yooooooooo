@@ -1,5 +1,8 @@
 import jsPDF from 'jspdf'
 import { formatCurrency, formatDistanceKm, formatParkingDistance } from './utils'
+import { formatStopAddress, normalizeStops, type QuoteStop } from './stops'
+import { applyPdfTextSanitizer } from './pdfText'
+import { packagingLabel } from './packagingCatalog'
 
 /**
  * Generador de PDF para el panel admin, alimentado por DATOS (no por el store).
@@ -34,8 +37,43 @@ export interface AdminQuoteData {
   totalVolume?: number | null
   totalWeight?: number | null
   totalDistance?: number | null
-  items?: Array<{ name: string; quantity: number; volume: number; packaging?: { type: string } }> | null
+  items?: Array<{
+    name: string
+    quantity: number
+    volume: number
+    packaging?: { type: string; pricePerUnit?: number }
+  }> | null
   additionalServices?: Record<string, any> | null
+  /**
+   * Nota escrita en el panel sobre esta reserva o prospecto (`bookings.notes` /
+   * `quote_prospects.notes`). Distinta de `additionalServices.observations`, que es lo
+   * que escribió el cliente en el cotizador.
+   *
+   * OJO: sale en las DOS versiones del PDF, incluida la de precios, que es la que se le
+   * manda al cliente. Fue lo que pidió Tomás; si alguna vez se escribe algo interno ahí,
+   * el cliente lo va a leer.
+   */
+  notes?: string | null
+  /**
+   * Código legible del documento: RES-000001 para una reserva, COT-000001 para una
+   * cotización. Sirve para que el cliente y el equipo hablen del mismo papel por
+   * teléfono. Ausente mientras no esté aplicada add_public_ids.sql.
+   */
+  code?: string | null
+  /** Paradas intermedias, en orden. El chofer arma el recorrido con esto. */
+  stops?: QuoteStop[] | null
+  /**
+   * Lo que escribieron los choferes sobre el trabajo realizado.
+   *
+   * Salen SOLO en la orden de trabajo, nunca en la cotización con precios: son notas
+   * operativas ("el cliente no estaba", "faltó un bulto") escritas para adentro, y la
+   * versión con precios es la que se le manda al cliente.
+   */
+  driverNotes?: Array<{
+    note: string
+    vehicle_label?: string | null
+    created_at?: string | null
+  }> | null
 }
 
 export interface AdminQuotePdfOptions {
@@ -63,6 +101,20 @@ function formatDateCL(dateStr?: string | null): string {
   return isNaN(d.getTime()) ? dateStr : d.toLocaleDateString('es-CL')
 }
 
+/** Fecha y hora corta en horario de Chile, para encabezar cada nota del chofer. */
+function formatDateTimeCL(iso?: string | null): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ''
+  return d.toLocaleString('es-CL', {
+    timeZone: 'America/Santiago',
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 /** Texto de piso/ascensor para una dirección. null si no hay piso relevante (planta baja o sin dato). */
 function floorInfo(floor?: number | null, hasElevator?: boolean | null): string | null {
   if (typeof floor !== 'number' || floor <= 0) return null
@@ -84,6 +136,12 @@ export async function generateAdminQuotePDF(
   const shouldDownload = options.download !== false
 
   const pdf = new jsPDF('p', 'mm', 'a4')
+
+  // Deja el documento a salvo de emojis y guiones largos: la fuente del PDF no los
+
+  // dibuja y saldrían como basura. Se aplica una sola vez, sobre todo lo que se escriba.
+
+  applyPdfTextSanitizer(pdf as any)
   const pageWidth = pdf.internal.pageSize.getWidth()
   const pageHeight = pdf.internal.pageSize.getHeight()
   let y = 20
@@ -121,7 +179,15 @@ export async function generateAdminQuotePDF(
   pdf.setFontSize(11)
   pdf.setFont('helvetica', 'normal')
   pdf.text('Yo Me Encargo - Servicios de Mudanza', pageWidth / 2, 25, { align: 'center' })
-  pdf.text(`Emision: ${new Date().toLocaleDateString('es-CL')}`, pageWidth / 2, 32, { align: 'center' })
+  // El código va junto a la fecha, en la cabecera: es lo primero que se busca cuando
+  // alguien llama con el papel en la mano. Sin migración aplicada, no se dibuja.
+  const emision = `Emision: ${new Date().toLocaleDateString('es-CL')}`
+  pdf.text(
+    data.code ? `${data.code}   ·   ${emision}` : emision,
+    pageWidth / 2,
+    32,
+    { align: 'center' }
+  )
 
   // Banda distintiva para la versión de trabajadores
   if (!withPrices) {
@@ -214,6 +280,23 @@ export async function generateAdminQuotePDF(
     ensureSpace(6)
     pdf.text(`  Acarreo estacionamiento a puerta: ${originParkingTxt}`, 20, y); y += 6
   }
+  // Paradas: van ENTRE origen y destino porque ese es el orden del recorrido. Si se
+  // listaran al final, el chofer leería la ruta al revés de como la maneja.
+  const paradas = normalizeStops(data.stops)
+  if (paradas.length > 0) {
+    paradas.forEach((parada, i) => {
+      const texto = `Parada ${i + 1}: ${formatStopAddress(parada)}`
+      pdf.splitTextToSize(texto, pageWidth - 40).forEach((l: string) => {
+        ensureSpace(6); pdf.text(l, 20, y); y += 6
+      })
+      if (parada.note) {
+        pdf.splitTextToSize(`  ${parada.note}`, pageWidth - 44).forEach((l: string) => {
+          ensureSpace(6); pdf.text(l, 20, y); y += 6
+        })
+      }
+    })
+  }
+
   const destLines = pdf.splitTextToSize(`Destino: ${data.destinationAddress || 'No especificada'}`, pageWidth - 40)
   destLines.forEach((l: string) => { ensureSpace(6); pdf.text(l, 20, y); y += 6 })
   const destFloorTxt = floorInfo(data.destinationFloor, data.destinationHasElevator)
@@ -262,7 +345,7 @@ export async function generateAdminQuotePDF(
         ensureSpace(5)
         pdf.setFontSize(9)
         pdf.setTextColor(...PRIMARY)
-        pdf.text(`  Embalaje: ${item.packaging.type}`, col1, y)
+        pdf.text(`  Embalaje: ${packagingLabel(item.packaging.type)}`, col1, y)
         pdf.setTextColor(...TEXT)
         pdf.setFontSize(11)
         y += 5
@@ -288,7 +371,20 @@ export async function generateAdminQuotePDF(
 
   // ── Servicios adicionales (operativos: útiles para trabajadores) ──
   const svc = data.additionalServices || {}
-  const hasSvc = svc.disassembly || svc.assembly || svc.packing || svc.unpacking
+  const extraHelpers = Math.max(0, Number(svc.extraHelpers) || 0)
+  const requiredCrew = Math.max(1, Number(svc.requiredCrew) || 1)
+  const totalCrew = Math.max(requiredCrew + extraHelpers, Number(svc.totalCrew) || 0)
+  const hasCrew = extraHelpers > 0 || totalCrew > 1
+  const hasSvc =
+    svc.disassembly ||
+    svc.assembly ||
+    svc.packing ||
+    svc.unpacking ||
+    svc.fridgeDisassembly ||
+    svc.priority ||
+    svc.stairsCarry ||
+    Number(svc.overCapacitySurcharge) > 0 ||
+    hasCrew
   if (hasSvc) {
     ensureSpace(24)
     pdf.setFont('helvetica', 'bold')
@@ -301,6 +397,23 @@ export async function generateAdminQuotePDF(
     if (svc.assembly) { ensureSpace(6); pdf.text('[OK] Armado de muebles', 20, y); y += 6 }
     if (svc.packing) { ensureSpace(6); pdf.text('[OK] Embalaje / armado de cajas', 20, y); y += 6 }
     if (svc.unpacking) { ensureSpace(6); pdf.text('[OK] Desembalaje', 20, y); y += 6 }
+    // Servicios agregados en sep-2026. Van con los otros para que el chofer sepa qué
+    // trabajo lleva la mudanza y el cliente vea qué contrató.
+    if (svc.fridgeDisassembly) { ensureSpace(6); pdf.text('[OK] Desarmado de refrigerador', 20, y); y += 6 }
+    if (svc.priority) { ensureSpace(6); pdf.text('[OK] Priority - agenda libre', 20, y); y += 6 }
+    // Aviso operativo (oct-2026): no es un cargo, pero al equipo le cambia el trabajo.
+    if (svc.stairsCarry) { ensureSpace(6); pdf.text('[!] Muebles grandes por la escalera (no caben en el ascensor)', 20, y); y += 6 }
+    if (Number(svc.overCapacitySurcharge) > 0) {
+      ensureSpace(6)
+      pdf.text('[OK] Segundo camion por volumen (no entra en uno solo)', 20, y); y += 6
+    }
+    if (hasCrew) {
+      ensureSpace(extraHelpers > 0 ? 12 : 6)
+      pdf.text(`[OK] Cuadrilla total: ${totalCrew} personas`, 20, y); y += 6
+      if (extraHelpers > 0) {
+        pdf.text(`    Ayudantes adicionales seleccionados: ${extraHelpers}`, 20, y); y += 6
+      }
+    }
     y += 4
   }
 
@@ -317,6 +430,70 @@ export async function generateAdminQuotePDF(
       ensureSpace(6); pdf.text(line, 20, y); y += 6
     })
     y += 4
+  }
+
+  // ── Notas del panel ──
+  // Va en las dos versiones (con y sin precios): en la orden de trabajo le sirve al
+  // chofer, y en la cotización al cliente. Se respetan los saltos de línea que escribió
+  // quien la redactó, porque suelen ser varios puntos, uno por renglón.
+  if (data.notes && String(data.notes).trim()) {
+    ensureSpace(18)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(12)
+    pdf.text('NOTAS:', 20, y)
+    y += 7
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(11)
+    for (const paragraph of String(data.notes).split(/\r?\n/)) {
+      if (!paragraph.trim()) {
+        // Renglón en blanco: se respeta como separación entre párrafos.
+        ensureSpace(3)
+        y += 3
+        continue
+      }
+      pdf.splitTextToSize(paragraph, pageWidth - 40).forEach((line: string) => {
+        ensureSpace(6); pdf.text(line, 20, y); y += 6
+      })
+    }
+    y += 4
+  }
+
+  // ── Notas del chofer (SOLO en la orden de trabajo) ──
+  // La condición `!withPrices` es la que importa: estas notas se escriben para el equipo,
+  // y la versión con precios se le manda al cliente.
+  const notasChofer = (data.driverNotes || []).filter((n) => n && String(n.note || '').trim())
+  if (!withPrices && notasChofer.length > 0) {
+    ensureSpace(18)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(12)
+    pdf.text('NOTAS DEL CHOFER:', 20, y)
+    y += 7
+    pdf.setFontSize(11)
+
+    for (const nota of notasChofer) {
+      // Encabezado de cada nota: cuándo y desde el link de qué camión se escribió.
+      const cuando = formatDateTimeCL(nota.created_at)
+      const quien = [cuando, nota.vehicle_label || ''].filter(Boolean).join(' · ')
+      if (quien) {
+        ensureSpace(5)
+        pdf.setFont('helvetica', 'bold')
+        pdf.setFontSize(9)
+        pdf.setTextColor(...GRAY)
+        pdf.text(quien, 20, y)
+        y += 5
+        pdf.setTextColor(...TEXT)
+        pdf.setFontSize(11)
+      }
+      pdf.setFont('helvetica', 'normal')
+      for (const parrafo of String(nota.note).split(/\r?\n/)) {
+        if (!parrafo.trim()) { ensureSpace(3); y += 3; continue }
+        pdf.splitTextToSize(parrafo, pageWidth - 44).forEach((line: string) => {
+          ensureSpace(6); pdf.text(line, 24, y); y += 6
+        })
+      }
+      y += 3
+    }
+    y += 2
   }
 
   // ── Precio final (solo versión con precios) ──
@@ -346,7 +523,7 @@ export async function generateAdminQuotePDF(
   } else {
     pdf.text('Cotizacion valida por 7 dias desde la emision.', pageWidth / 2, footerY - 5, { align: 'center' })
   }
-  pdf.text('www.yomeencargo.cl | +56 9 5439 0267', pageWidth / 2, footerY, { align: 'center' })
+  pdf.text('www.yomeencargo.cl | +56 9 5233 4799', pageWidth / 2, footerY, { align: 'center' })
 
   const safeName = (data.name || 'Cliente').replace(/\s+/g, '_').replace(/[^\w-]/g, '')
   const prefix = withPrices ? 'Cotizacion' : 'OrdenTrabajo'

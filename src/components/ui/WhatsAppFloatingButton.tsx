@@ -1,13 +1,17 @@
 'use client'
 
+import { usePathname } from 'next/navigation'
 import { trackEvent } from '@/lib/tracking'
-import { buildBusinessWhatsAppLink } from '@/lib/whatsapp'
+import { companyWhatsAppLink } from '@/lib/whatsapp'
 
-const WHATSAPP_URL = buildBusinessWhatsAppLink(
-  'Hola, necesito información sobre sus servicios'
-)
+const WHATSAPP_URL = companyWhatsAppLink('Hola, necesito información sobre sus servicios')
 
 export default function WhatsAppFloatingButton() {
+  // El globo es para quien visita el sitio. En el sistema interno (admin y panel del
+  // trabajador) tapa botones y no le sirve a nadie; el panel del cliente sí lo conserva.
+  const pathname = usePathname() || ''
+  if (pathname.startsWith('/admin') || pathname.startsWith('/trabajos')) return null
+
   const handleClick = () => {
     trackEvent('Contact', { method: 'whatsapp', location: 'floating_widget' })
   }

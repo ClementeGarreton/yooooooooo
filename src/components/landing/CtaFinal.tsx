@@ -5,7 +5,7 @@ import { motion } from 'framer-motion'
 import { ArrowRight, Phone } from 'lucide-react'
 import { trackEvent } from '@/lib/tracking'
 
-const PHONE = '+56 9 5439 0267'
+const PHONE = '+56 9 5233 4799'
 
 export default function CtaFinal() {
   return (

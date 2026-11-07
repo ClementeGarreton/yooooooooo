@@ -4,7 +4,7 @@ Este documento explica cómo configurar la nueva funcionalidad de **Cotización 
 
 ## 📋 Descripción
 
-El Cotizador a Domicilio es una nueva modalidad que permite a los clientes solicitar una visita profesional a su hogar para realizar una cotización completa y personalizada de su mudanza. Este servicio tiene un precio fijo de **$23.000** y está disponible solo en la **Región Metropolitana**.
+El Cotizador a Domicilio es una nueva modalidad que permite a los clientes solicitar una visita profesional a su hogar para realizar una cotización completa y personalizada de su mudanza. Este servicio tiene un precio fijo de **$33.000** y está disponible solo en la **Región Metropolitana**.
 
 ## 🏗️ Arquitectura
 
@@ -17,7 +17,7 @@ El Cotizador a Domicilio es una nueva modalidad que permite a los clientes solic
 ### Flujo del Servicio
 1. Cliente ingresa datos personales
 2. Cliente ingresa dirección de visita (solo RM)
-3. Cliente ve resumen y paga $23.000 mediante Flow
+3. Cliente ve resumen y paga $33.000 mediante Flow
 4. Sistema crea reserva de tipo "domicilio"
 5. Administrador ve la reserva en el panel
 6. Se realiza la visita
@@ -105,7 +105,7 @@ database/
 2. **Flujo Simplificado**: Solo 3 pasos:
    - Datos personales (nombre, email, teléfono)
    - Dirección de visita (solo RM)
-   - Resumen y pago ($23.000 fijo)
+   - Resumen y pago ($33.000 fijo)
 
 3. **Restricción Geográfica**: Solo disponible en la Región Metropolitana
 
@@ -149,7 +149,7 @@ Cuando se marca como "completed", el sistema automáticamente guarda `service_co
 
 ## 💰 Precio y Pagos
 
-- **Precio Fijo**: $23.000 (definido en `HomeSummaryStep.tsx`)
+- **Precio Fijo**: $33.000. Se edita en el panel (Configuración → Precios → «Visita a domicilio») y se guarda en `pricing_config.additional_services.homeVisitPrice`
 - **Método de Pago**: Flow (WebPay, tarjetas, transferencias)
 - **Tipo de Pago**: Siempre "completo" (no hay opción de mitad)
 
@@ -157,11 +157,13 @@ Cuando se marca como "completed", el sistema automáticamente guarda `service_co
 
 ### Cambiar el Precio
 
-Edita el archivo `src/components/steps/home/HomeSummaryStep.tsx`:
+Se cambia desde el panel: **Configuración → Precios → «Visita a domicilio»**. Queda
+guardado en la base (`pricing_config.additional_services.homeVisitPrice`) y lo toman
+todas las pantallas, el botón de pago y el comprobante.
 
-```typescript
-const FIXED_PRICE = 23000 // Cambia este valor
-```
+El valor por defecto del código (`DEFAULT_HOME_VISIT_PRICE` en
+`src/lib/homeVisitPricing.ts`) es solo el respaldo para cuando no se puede leer la
+configuración; conviene dejarlo igual al precio vigente.
 
 ### Agregar Más Comunas
 

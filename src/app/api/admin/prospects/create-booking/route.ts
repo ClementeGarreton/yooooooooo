@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
 import { getActorFromRequest, logAdminAction } from '@/lib/activityLog'
 import { pickAttribution, hasAttribution, backfillAttribution } from '@/lib/attributionServer'
+import { normalizeStops } from '@/lib/stops'
+import { sendBookingConfirmedIfEligible } from '@/lib/transactionalEmails'
+import { FULL_RATIO } from '@/lib/revenueBreakdown'
+import { isPaymentLedgerAvailable, recordPayment } from '@/lib/bookingPayments'
+import { markBookingManual } from '@/lib/bookingOriginServer'
+import { quoteStatePhotos } from '@/lib/quoteState'
 
 // Crea (o confirma) una RESERVA real a partir de un prospecto, sin pasar por pago online.
 // Útil cuando el admin cierra el trato por WhatsApp/teléfono. La reserva queda confirmada
@@ -18,7 +24,13 @@ export async function POST(request: NextRequest) {
     const alreadyPaid = body.paid === true
     const paymentMethod =
       typeof body.paymentMethod === 'string' && body.paymentMethod ? body.paymentMethod : 'manual'
-    const paymentType = body.paymentType === 'mitad' ? 'mitad' : 'completo'
+    // Cuánto entregó el cliente. No se deduce dinero desde "mitad" o "completo":
+    // para declarar un pago hace falta el importe observado.
+    const amountPaidInput = body.amountPaid
+    const parsedAmountPaid =
+      amountPaidInput === undefined || amountPaidInput === null || amountPaidInput === ''
+        ? null
+        : Math.max(0, Math.round(Number(amountPaidInput) || 0))
 
     if (!prospectId) {
       return NextResponse.json({ error: 'prospectId requerido' }, { status: 400 })
@@ -58,15 +70,37 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Precio inválido' }, { status: 400 })
     }
 
+    // Monto realmente entregado y modalidad que se deriva de él: pagar el total (o más)
+    // es «completo»; cualquier abono parcial queda como «mitad», que es como el resto del
+    // panel lee «pagó algo y falta el saldo» (filtro «Por cobrar», link de saldo, correo).
+    const paidAmount = parsedAmountPaid ?? 0
+    // Umbral del pago completo: el 95% del precio, porque pagar todo por adelantado lleva
+    // 5% de descuento. Quien transfiere ese monto pagó completo y no debe nada; cualquier
+    // cosa por debajo es un abono y deja saldo.
+    const paymentType =
+      paidAmount >= Math.round(Number(effectivePrice) * FULL_RATIO) ? 'completo' : 'mitad'
+    if (alreadyPaid && (paidAmount <= 0 || paidAmount > Number(effectivePrice))) {
+      return NextResponse.json(
+        { error: 'Indica el monto realmente recibido, mayor que cero y no superior al precio del servicio.' },
+        { status: 400 }
+      )
+    }
+    if (alreadyPaid && !(await isPaymentLedgerAvailable())) {
+      return NextResponse.json({ error: 'El libro de pagos no está disponible; no se creó una reserva con cobro.' }, { status: 503 })
+    }
+
     const comment = commentInput !== undefined ? commentInput : prospect.adjustment_comment || ''
     const quoteId = prospect.quote_id || `Q-PROS-${prospect.id}`
 
     // ¿Ya existe un booking para este quote_id? (p.ej. una pre-reserva provisional previa)
     const { data: existing } = await supabaseAdmin
       .from('bookings')
-      .select('id, gclid, gbraid, wbraid, utm_source, utm_campaign')
+      .select('id, amount_paid, gclid, gbraid, wbraid, utm_source, utm_campaign')
       .eq('quote_id', quoteId)
       .maybeSingle()
+    if (alreadyPaid && Number(existing?.amount_paid || 0) > 0) {
+      return NextResponse.json({ error: 'La reserva ya tiene un cobro registrado. Para sumar otro pago, usa «Registrar pago» en Reservas.' }, { status: 409 })
+    }
 
     // Reserva creada desde una cotizacion previa: hereda la atribucion del prospecto.
     const prospectAttribution = pickAttribution(prospect)
@@ -83,17 +117,25 @@ export async function POST(request: NextRequest) {
           scheduled_date: effDate,
           scheduled_time: effTime,
           total_price: effectivePrice,
+          adjusted_price:
+            prospect.total_price && Number(prospect.total_price) !== Number(effectivePrice)
+              ? effectivePrice
+              : null,
           notes: comment || null,
           origin_floor: prospect.origin_floor ?? null,
           origin_has_elevator: prospect.origin_has_elevator ?? null,
           destination_floor: prospect.destination_floor ?? null,
           destination_has_elevator: prospect.destination_has_elevator ?? null,
+          // La pre-reserva pudo nacer sin paradas (el pago web no las mandaba): se completan
+          // con las del lead. Si el lead no tiene, no se borran las que ya tenga la reserva.
+          ...(normalizeStops(prospect.stops).length ? { stops: normalizeStops(prospect.stops) } : {}),
           ...(alreadyPaid
             ? {
                 payment_status: 'approved',
                 payment_method: paymentMethod,
                 payment_type: paymentType,
                 payment_date: new Date().toISOString(),
+                amount_paid: paidAmount,
               }
             : {}),
         })
@@ -158,8 +200,16 @@ export async function POST(request: NextRequest) {
           is_provisional: false,
           total_price: effectivePrice,
           original_price: prospect.total_price ?? effectivePrice,
+          adjusted_price:
+            prospect.total_price && Number(prospect.total_price) !== Number(effectivePrice)
+              ? effectivePrice
+              : null,
+          amount_paid: alreadyPaid ? paidAmount : 0,
           origin_address: prospect.origin_address || null,
           destination_address: prospect.destination_address || null,
+          // La ruta viaja con la reserva: si el cliente cotizó con paradas, el chofer
+          // tiene que verlas en la orden de trabajo, no solo las dos puntas.
+          stops: normalizeStops(prospect.stops).length ? normalizeStops(prospect.stops) : null,
           origin_floor: prospect.origin_floor ?? null,
           origin_has_elevator: prospect.origin_has_elevator ?? null,
           destination_floor: prospect.destination_floor ?? null,
@@ -167,6 +217,8 @@ export async function POST(request: NextRequest) {
           is_company: isCompany,
           company_name: isCompany ? prospect.company_name || null : null,
           company_rut: isCompany ? prospect.company_rut || null : null,
+          // Las fotos que subió el cliente al cotizar viajan con la reserva.
+          photo_urls: quoteStatePhotos(prospect.quote_state),
           notes: comment || null,
           ...(hasAttribution(prospectAttribution) ? prospectAttribution : {}),
         })
@@ -178,6 +230,14 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Error al crear la reserva' }, { status: 500 })
       }
       bookingId = created.id
+    }
+    await markBookingManual(bookingId)
+
+    const ledger = alreadyPaid
+      ? await recordPayment({ bookingId, quoteId, flowToken: null, amount: paidAmount, kind: 'manual' })
+      : null
+    if (ledger && !ledger.recorded) {
+      console.error('[admin/create-booking] Reserva con cobro sin movimiento en booking_payments:', bookingId)
     }
 
     // Marcar prospecto como convertido + persistir ajuste/agenda/quote_id
@@ -201,17 +261,36 @@ export async function POST(request: NextRequest) {
       entityType: 'booking',
       entityId: bookingId,
       entityLabel: [prospect.name, effDate].filter(Boolean).join(' · '),
-      summary: `Convirtió el lead ${prospect.name || prospect.email || ''} en reserva para ${effDate} ${String(effTime || '').slice(0, 5)} por $${Number(effectivePrice).toLocaleString('es-CL')}`,
+      summary: `Convirtió el lead ${prospect.name || prospect.email || ''} en reserva para ${effDate} ${String(effTime || '').slice(0, 5)} por $${Number(effectivePrice).toLocaleString('es-CL')}${
+        alreadyPaid
+          ? ` · pagó $${paidAmount.toLocaleString('es-CL')} (${paymentMethod}), saldo $${Math.max(
+              0,
+              Number(effectivePrice) - paidAmount
+            ).toLocaleString('es-CL')}`
+          : ''
+      }`,
       changes: {
         converted: {
           from: { prospect_id: prospect.id },
-          to: { booking_id: bookingId, quote_id: quoteId, price: effectivePrice },
+          to: {
+            booking_id: bookingId,
+            quote_id: quoteId,
+            price: effectivePrice,
+            ...(alreadyPaid
+              ? { amount_paid: paidAmount, payment_type: paymentType, payment_method: paymentMethod }
+              : {}),
+          },
         },
       },
       request,
     })
 
-    return NextResponse.json({ success: true, bookingId, quoteId, price: effectivePrice })
+    // Correo de ingreso (#05). Antes solo llegaba si se marcaba «ya pagó», y recién con
+    // el cron de la hora siguiente; una reserva cerrada por WhatsApp sin pago no lo recibía.
+    // Idempotente: si esta reserva ya lo tenía (p.ej. una pre-reserva pagada), no se repite.
+    await sendBookingConfirmedIfEligible(bookingId)
+
+    return NextResponse.json({ success: true, bookingId, quoteId, price: effectivePrice, paymentLedgerRecorded: ledger?.recorded ?? null })
   } catch (error) {
     console.error('[admin/create-booking] Error:', error)
     return NextResponse.json(

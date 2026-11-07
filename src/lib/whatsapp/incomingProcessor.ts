@@ -32,6 +32,7 @@ import { canCloseInventory, isInventoryAddition, upsertInventoryPhoto } from '@/
 import { applyInventoryEdits, parseInventoryEdits, type CatalogInventoryItem } from '@/lib/whatsapp/inventoryEdits'
 import { parseTaxDocumentChoice } from '@/lib/whatsapp/taxDocument'
 import { answerExtras } from '@/lib/whatsapp/extrasFlow'
+import { FREEFORM_START, applyLabelEdits, formatIntakeReview, formatIntakeNextPrompt, inferSinglePendingEdit, isContractClauseReply, intakeCanConfirm, markServiceAnswers, INTAKE_SERVICES } from '@/lib/whatsapp/freeformIntake'
 import { getAvailableSlotsForDate } from '@/lib/scheduleAvailability'
 import { supabaseAdmin } from '@/lib/supabase'
 import { WHATSAPP_WELCOME, botCommand, decideBotAction, isQuoteExpired, isGreeting } from '@/lib/whatsapp/botRouter'
@@ -235,6 +236,194 @@ async function finalizeQuote(session: QuoteSessionRow, conversationId: string, t
   })
 }
 
+/** Muestra el documento de campos interpretados, con nombres copiables para corregir. */
+async function sendFreeformReview(session: QuoteSessionRow, conversationId: string, to: string, intro = '', mode: 'full' | 'next' = 'full') {
+  const ids = session.state.items.map((item) => item.catalogItemId)
+  const names = new Map<string, string>()
+  if (ids.length) {
+    const { data, error } = await supabaseAdmin.from('catalog_items').select('id,name').in('id', ids)
+    if (error) throw new Error(error.message)
+    for (const row of data || []) names.set(String(row.id), String(row.name))
+  }
+  const itemNames = session.state.items.map((item) => `${item.quantity} × ${names.get(item.catalogItemId) || 'ARTÍCULO SIN NOMBRE'}`)
+  const summary = mode === 'next' && !intakeCanConfirm(session.state)
+    ? formatIntakeNextPrompt(session.state)
+    : formatIntakeReview(session.state, itemNames)
+  await sendAndLog(conversationId, to, intro ? `${intro}\n\n${summary}` : summary)
+}
+
+/** Comprueba horarios incluso si FECHA/HORA llegaron dentro de un mensaje largo. */
+async function validateFreeformSchedule(state: QuoteSessionRow['state']): Promise<string> {
+  if (!state.schedule.date || !state.schedule.time) return ''
+  try {
+    const slots = await getAvailableSlotsForDate(state.schedule.date)
+    if (!slots.some((slot) => slot.time === state.schedule.time)) {
+      const requested = state.schedule.time
+      state.schedule.time = null
+      return `El horario ${requested} no está disponible en ${state.schedule.date}. ` +
+        (slots.length ? `Opciones: ${slots.slice(0, 8).map((slot) => slot.time).join(', ')}.` : 'Indica otra fecha.')
+    }
+  } catch (error) {
+    // El cotizador tradicional continúa si la disponibilidad no está accesible.
+    console.warn('[WhatsApp][ficha] No fue posible consultar disponibilidad:', error)
+  }
+  return ''
+}
+
+/** El cliente puede responder en un párrafo, un bloque de variables o una fotografía. */
+async function processFreeformQuoteTurn(
+  session: QuoteSessionRow,
+  conversationId: string,
+  to: string,
+  message: ReturnType<typeof extractMessages>[number],
+) {
+  const text = message.text.trim()
+  if (message.type === 'image') {
+    session = await mutateQuoteSessionAtomically(session.id, (current) => upsertInventoryPhoto(current, {
+      messageId: message.id, status: 'processing', recognized: [],
+    }))
+    const imageDataUrl = message.imageId ? await downloadWhatsAppMediaAsDataUrl(message.imageId) : null
+    if (!imageDataUrl) {
+      await mutateQuoteSessionAtomically(session.id, (current) => upsertInventoryPhoto(current, {
+        messageId: message.id, status: 'needs_description', recognized: [],
+      }))
+      await sendAndLog(conversationId, to, 'No pude abrir la foto. Escríbeme qué muebles contiene y los agregaré a la ficha.')
+      return
+    }
+    let photoStorage: Awaited<ReturnType<typeof saveQuotePhoto>>
+    try {
+      photoStorage = await saveQuotePhoto(session.id, message.id, imageDataUrl)
+    } catch (error) {
+      console.error('[WhatsApp][ficha] Error conservando fotografía:', error)
+      await mutateQuoteSessionAtomically(session.id, (current) => ({
+        ...current, inventoryPhotos: (current.inventoryPhotos || []).filter((photo) => photo.messageId !== message.id),
+      }))
+      await sendAndLog(conversationId, to, 'No pude guardar la foto. Por favor, reenvíala.')
+      return
+    }
+    let inventory: Awaited<ReturnType<typeof parseWhatsAppInventory>>
+    try {
+      inventory = await parseWhatsAppInventory(text, imageDataUrl)
+    } catch (error) {
+      console.error('[WhatsApp][ficha] Error analizando fotografía:', error)
+      await mutateQuoteSessionAtomically(session.id, (current) => upsertInventoryPhoto(current, {
+        messageId: message.id, status: 'needs_description', recognized: [], storagePath: photoStorage.storagePath,
+      }))
+      await sendAndLog(conversationId, to, 'No pude reconocer el contenido. Escribe los muebles de la foto y los incorporaré.')
+      return
+    }
+    await addUsage(conversationId, inventory.usage)
+    session = await mutateQuoteSessionAtomically(session.id, (current) => {
+      let next = mergeInventory(current, inventory.statePatch)
+      next = upsertInventoryPhoto(next, {
+        messageId: message.id, status: inventory.needsReview ? 'needs_description' : 'done',
+        recognized: inventory.recognizedNames, storagePath: photoStorage.storagePath,
+      })
+      next.additionalServices.photos = [...new Set([...(next.additionalServices.photos || []), photoStorage.publicUrl])]
+      next.inventoryCollectionDone = true
+      if (next.intake) next.intake.stage = 'review'
+      return next
+    })
+    await sendFreeformReview(session, conversationId, to, inventory.needsReview
+      ? 'La foto requiere que describas los objetos que no pude reconocer.' : '✓ Foto incorporada al inventario.', 'next')
+    return
+  }
+
+  if (CONFIRM_QUOTE.test(text)) {
+    if (session.state.intake?.stage === 'review' && intakeCanConfirm(session.state) && getNextSection(session.state) === 7) {
+      await finalizeQuote(session, conversationId, to)
+    } else {
+      await sendFreeformReview(session, conversationId, to, 'Todavía faltan datos o hay objetos por revisar. No generé ninguna cotización.')
+    }
+    return
+  }
+
+  if (!text || (isGreeting(text) && session.state.intake?.stage === 'describe')) {
+    await sendAndLog(conversationId, to, FREEFORM_START)
+    return
+  }
+
+  if (/^(ficha|resumen|ver ficha)[.!\s]*$/i.test(text)) {
+    await sendFreeformReview(session, conversationId, to)
+    return
+  }
+
+  // La pregunta activa identifica las respuestas cortas sin etiquetas. Los relatos
+  // largos y correcciones múltiples siguen pasando por el parser estructurado.
+  const focusedEdit = inferSinglePendingEdit(session.state, text)
+  const editingText = focusedEdit || text
+
+  // Las variables etiquetadas se aplican determinísticamente (sin adivinar campos).
+  const labels = applyLabelEdits(session.state, editingText)
+  if (labels.recognized && !isContractClauseReply(text)) {
+    if (labels.errors.length) {
+      await sendAndLog(conversationId, to, `No cambié la ficha porque encontré lo siguiente:\n• ${labels.errors.join('\n• ')}\n\nCorrige estas líneas y reenvíalas.`)
+      return
+    }
+    let newState = labels.state
+    if (labels.inventory) {
+      const parsedInventory = await parseWhatsAppInventory(labels.inventory.description)
+      await addUsage(conversationId, parsedInventory.usage)
+      if (!parsedInventory.statePatch.items.length || parsedInventory.statePatch.pendingInventory.length) {
+        await sendAndLog(conversationId, to, 'No cambié el inventario: hay objetos sin identificar. Descríbelos con su cantidad y tipo.')
+        return
+      }
+      newState = labels.inventory.mode === 'replace'
+        ? { ...newState, items: parsedInventory.statePatch.items, pendingInventory: [], inventoryCollectionDone: true }
+        : mergeInventory(newState, parsedInventory.statePatch)
+    }
+    newState.confirmed = false
+    if (newState.intake) newState.intake.stage = 'review'
+    const availability = await validateFreeformSchedule(newState)
+    session = await saveQuoteSession(session.id, newState)
+    await logAction({ conversationId, action: 'intake_variables_edited', payload: { changed: labels.changed, messageId: message.id } })
+    await sendFreeformReview(session, conversationId, to, availability || '✓ Corrección registrada.', 'next')
+    return
+  }
+
+  // El inventario se puede corregir con QUITAR/AGREGAR, sin afectar otros campos.
+  if (parseInventoryEdits(text) !== null && session.state.intake?.stage === 'review') {
+    const edit = await editInventory(session.id, text)
+    if (edit.updated) await sendFreeformReview(edit.updated, conversationId, to, '✓ Inventario actualizado.', 'next')
+    else await sendAndLog(conversationId, to, edit.response)
+    return
+  }
+
+  // Una descripción natural puede contener datos de las siete secciones.
+  const parsed = await parseGeneralWhatsAppTurn(0, session.state, text)
+  await addUsage(conversationId, parsed.usage)
+  let nextState = parsed.state
+  const doc = parseTaxDocumentChoice(text)
+  if (doc) {
+    nextState.taxDocument = doc
+    nextState.personalInfo.isCompany = doc === 'factura'
+  }
+  const patch = parsed.patch
+  let knownServices = INTAKE_SERVICES.filter((key) => patch[key] !== null)
+  if (/\b(ningun(os)? servicio(s)?|sin servicios (adicionales)?|no necesito (servicios|embalaje ni desarmado))\b/i.test(text.normalize('NFD').replace(/[\u0300-\u036f]/g, ''))) {
+    for (const key of INTAKE_SERVICES) nextState.additionalServices[key] = false
+    knownServices = INTAKE_SERVICES
+  }
+  nextState = markServiceAnswers(nextState, knownServices)
+  if (patch.inventoryDescription?.trim()) {
+    const inventory = await parseWhatsAppInventory(patch.inventoryDescription)
+    await addUsage(conversationId, inventory.usage)
+    if (inventory.statePatch.items.length || inventory.statePatch.pendingInventory.length) {
+      nextState = mergeInventory(nextState, inventory.statePatch)
+      nextState.inventoryCollectionDone = true
+    }
+  }
+  nextState.confirmed = false // Solo CONFIRMAR exacto autoriza el precio/PDF.
+  if (nextState.intake) nextState.intake.stage = 'review'
+  const availability = await validateFreeformSchedule(nextState)
+  session = await saveQuoteSession(session.id, nextState)
+  await logAction({ conversationId, action: 'intake_freeform_parsed', payload: {
+    messageId: message.id, summary: patch.normalizedSummary,
+    fieldsRecognized: Object.entries(patch).filter(([key, value]) => value !== null && !['normalizedSummary', 'explicitConfirmation'].includes(key)).map(([key]) => key),
+  } })
+  await sendFreeformReview(session, conversationId, to, availability || 'Esto entendí de tu relato. Comprueba la ficha: puedes corregir varios datos juntos o seguir con el primer pendiente. Escribe FICHA cuando quieras volver a verla.')
+}
+
 async function deactivateBot(phone: string, bot: WhatsAppBotState, mode: 'idle' | 'human') {
   if (bot.quote_session_id && bot.mode === 'quoting') {
     if (mode === 'human') {
@@ -311,12 +500,16 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
       .in('status', ['collecting', 'ready'])
     if (error) throw new Error(error.message)
 
-    const session = await createWhatsAppSession(phone, customerPhone(to))
+    let session = await createWhatsAppSession(phone, customerPhone(to))
+    // Instagram conserva por ahora su flujo anterior; esta reprogramación es de WhatsApp.
+    if (messageContext.getStore()?.platform === 'instagram') {
+      session = await saveQuoteSession(session.id, { ...session.state, intake: undefined })
+    }
     await setBotMode(phone, 'quoting', session.id)
     const conversation = await findOrCreateWhatsAppConversation(phone, session.id, message.profileName)
     const conversationId = conversation.id as string
     await moveIncomingToConversation(message.id, conversationId)
-    await sendAndLog(conversationId, to, `Comencemos tu cotización. Puedes escribir *SALIR* en cualquier momento.\n\n${sectionQuestion(1, session.state)}`)
+    await sendAndLog(conversationId, to, session.state.intake ? FREEFORM_START : sectionQuestion(1, session.state))
     return
   }
 
@@ -396,18 +589,25 @@ Parece que nos tomamos un pequeño descanso. Tu cotización anterior se cerró a
     session = await saveQuoteSession(session.id, session.state, { quote_id: embeddedQuoteId })
   }
 
-  if (HUMAN_REQUEST.test(message.text)) {
+  if (HUMAN_REQUEST.test(message.text) && !/\b(no|sin|ning[uú]n)\b.{0,25}\b(asesor|ejecutivo|humano)\b/i.test(message.text)) {
     await handleHumanHandoff(session, conversationId, to)
     return
   }
 
-  if (isGreeting(message.text) && session.current_section === 1 && !session.state.personalInfo.name) {
+  if (!session.state.intake && isGreeting(message.text) && session.current_section === 1 && !session.state.personalInfo.name) {
     await sendAndLog(conversationId, to, sectionQuestion(1, session.state))
     return
   }
 
   let state = session.state
   let section = getNextSection(state)
+
+  // Nuevo flujo: declaración libre -> ficha editable -> confirmación explícita.
+  // Sesiones antiguas sin state.intake siguen el flujo previo para no romperlas.
+  if (state.intake) {
+    await processFreeformQuoteTurn(session, conversationId, to, message)
+    return
+  }
 
   // Respuesta tributaria determinista: una elección no inventa ni cambia el IVA.
   if (section === 1 && state.personalInfo.name && state.personalInfo.email && !state.taxDocument) {

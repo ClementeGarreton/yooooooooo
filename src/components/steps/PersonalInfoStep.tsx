@@ -1,5 +1,6 @@
 'use client'
 
+import { isValidRut } from '@/lib/rut'
 import { useState, useEffect } from 'react'
 import { useQuoteStore } from '@/store/quoteStore'
 import Button from '../ui/Button'
@@ -22,6 +23,7 @@ export default function PersonalInfoStep({ onNext, onPrevious }: PersonalInfoSte
     name: personalInfo?.name || '',
     email: personalInfo?.email || '',
     phone: personalInfo?.phone || '',
+    rut: personalInfo?.rut || '',
     isCompany: personalInfo?.isCompany || false,
     companyName: personalInfo?.companyName || '',
     companyRut: personalInfo?.companyRut || '',
@@ -45,7 +47,12 @@ export default function PersonalInfoStep({ onNext, onPrevious }: PersonalInfoSte
     if (!formData.phone.trim()) {
       newErrors.phone = 'El teléfono es requerido'
     } else if (!validatePhone(formData.phone)) {
-      newErrors.phone = 'Teléfono inválido (formato: +56 9 1234 5678)'
+      newErrors.phone = 'Revisa el teléfono: debe tener entre 8 y 15 dígitos'
+    }
+
+    // Opcional: solo se revisa si la persona lo escribió.
+    if (formData.rut.trim() && !isValidRut(formData.rut)) {
+      newErrors.rut = 'Revisa el RUT: el dígito verificador no calza'
     }
 
     if (formData.isCompany && !formData.companyName.trim()) {
@@ -129,6 +136,18 @@ export default function PersonalInfoStep({ onNext, onPrevious }: PersonalInfoSte
               error={errors.phone}
               helperText="Formato: +56 9 1234 5678"
               required
+            />
+          </div>
+
+          {/* RUT de la persona (opcional) */}
+          <div>
+            <Input
+              label="RUT (opcional)"
+              placeholder="12.345.678-9"
+              value={formData.rut}
+              onChange={(e) => setFormData({ ...formData, rut: e.target.value })}
+              error={errors.rut}
+              helperText="Sirve para identificarte en tu cuenta de cliente."
             />
           </div>
 
