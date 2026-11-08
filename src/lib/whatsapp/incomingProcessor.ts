@@ -29,7 +29,7 @@ import {
 } from '@/lib/ai/whatsappQuoteAssistant'
 import { generateQuoteFromSession, calculateSessionQuote } from '@/lib/serverQuoteEngine'
 import { createHandoffRequest, collectHandoffDetails, setPendingHandoffReason } from '@/lib/whatsapp/handoffRequests'
-import { TOMMY_QUOTE_START, TOMMY_FOLLOWUP, TOMMY_EXECUTIVE, tommyMissing, tommyPendingMessage, tommyCaseSummary, applyTommyAnswers, isTommyFormReply, isOnlyTommyServiceAnswers } from '@/lib/whatsapp/tommyFlow'
+import { TOMMY_QUOTE_START, TOMMY_FOLLOWUP, TOMMY_EXECUTIVE, tommyMissing, tommyPendingMessage, tommyCaseSummary, applyTommyAnswers, isTommyFormReply, isOnlyTommyServiceAnswers, tommyAnswerOnlyForAI, tommyDifferentialResult } from '@/lib/whatsapp/tommyFlow'
 import { saveQuotePhoto } from '@/lib/whatsapp/photoStorage'
 import { canCloseInventory, isInventoryAddition, upsertInventoryPhoto } from '@/lib/whatsapp/inventoryResolution'
 import { applyInventoryEdits, parseInventoryEdits, type CatalogInventoryItem } from '@/lib/whatsapp/inventoryEdits'
@@ -375,8 +375,21 @@ async function processTommyQuoteTurn(
     await finishTommyQuote(session, conversationId, to)
     return
   }
+  // Formulario copiado: comparar PRIMERO con el original y no enviar la pregunta
+  // entera a la IA si el cliente no añadió ninguna respuesta interpretable.
+  const differential = tommyDifferentialResult(text, nextState)
+  const onlyChanges = tommyAnswerOnlyForAI(text, nextState)
+  if (differential.conflicted.length) {
+    await sendAndLog(conversationId, to,
+      `Veo respuestas distintas para ${differential.conflicted.join(', ')}. ¿Cuál es la correcta?`)
+    return
+  }
+  if (differential.copiedForm && !onlyChanges) {
+    await sendAndLog(conversationId, to, 'No encontré respuestas nuevas. Puedes editar el mensaje anterior y reenviarlo.')
+    return
+  }
   // Las etiquetas individuales siguen admitiendo correcciones cuando corresponden.
-  const labels = isTommyFormReply(text)
+  const labels = (differential.copiedForm || isTommyFormReply(text))
     ? { recognized: false, errors: [] as string[], state: nextState, inventory: null }
     : applyLabelEdits(nextState, text)
   if (labels.recognized && !labels.errors.length && !isContractClauseReply(text)) {
@@ -398,7 +411,7 @@ async function processTommyQuoteTurn(
       await sendAndLog(conversationId, to, `Revisa estos datos: ${labels.errors.join('; ')}`)
       return
     }
-    const parsed = await parseGeneralWhatsAppTurn(0, nextState, text)
+    const parsed = await parseGeneralWhatsAppTurn(0, nextState, onlyChanges || text)
     await addUsage(conversationId, parsed.usage)
     nextState = parsed.state
     const patch = parsed.patch

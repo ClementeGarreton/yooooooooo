@@ -3,6 +3,7 @@
  * Este módulo es deliberadamente puro para que sus reglas puedan probarse sin DB ni IA.
  */
 import type { QuoteSessionState } from '../quoteSession'
+import { extractTommyDifferential, type DiffField } from './tommyDifferential.ts'
 
 export type TommyAnswer = 'escaleras' | 'acarreo' | 'embalaje'
 export const TOMMY_SIX = ['direcciones', 'articulos', 'fecha', 'escaleras', 'acarreo', 'embalaje'] as const
@@ -90,13 +91,59 @@ const normalizeValue = (value: string) => removeAccents(value.replace(/\*/g, '')
 const negative = (value: string) => /^(no(?:\b|[,.!])|ningun[oa]?\b|sin\b|no necesito\b)/.test(normalizeValue(value))
 const affirmative = (value: string) => /^(si\b|hay\b|necesito\b|se requiere\b|con\b)/.test(normalizeValue(value))
 
-/** No marcar "respondido" por copiar la pregunta sin completarla. */
+// Incluir la referencia original y TODOS los rótulos de pendientes. No depender
+// de que el cliente copie precisamente la última plantilla: puede contestar un
+// mensaje anterior después de haber cerrado otras preguntas.
+export const TOMMY_PENDING_REFERENCE = [
+  '- ' + labels.direcciones,
+  '- ' + labels.articulos,
+  '- ' + labels.fecha,
+  '- ' + labels.escaleras,
+  '- ' + labels.acarreo,
+  '- ' + labels.embalaje,
+].join('\n')
+
+function references(state?: QuoteSessionState): string[] {
+  return [TOMMY_QUOTE_START, TOMMY_PENDING_REFERENCE, ...(state ? [tommyPendingMessage(state) || ''] : [])]
+}
+
+/** Solo el delta, nunca las preguntas que el cliente copió literalmente. */
+export function tommyDifferentialResult(message: string, state?: QuoteSessionState) {
+  return extractTommyDifferential(message, references(state))
+}
+
+export function tommyAnswerOnlyForAI(message: string, state?: QuoteSessionState): string {
+  const diff = tommyDifferentialResult(message, state)
+  if (!diff.copiedForm) return message.trim()
+  const aiLabels: Record<DiffField, string> = {
+    direcciones: 'Direcciones origen y destino', articulos: 'Artículos para trasladar',
+    fecha: 'Fecha del flete', escaleras: 'Escaleras', acarreo: 'Acarreo', embalaje: 'Embalaje',
+  }
+  return [
+    ...diff.answers.map(answer => `${aiLabels[answer.field]}: ${answer.value}`),
+    ...(diff.freeText ? [diff.freeText] : []),
+  ].join('\n').trim()
+}
+
+/**
+ * Aplica únicamente respuestas verificables que hayan cambiado respecto de la
+ * referencia. El texto fijo del formulario NO puede completar un campo.
+ */
 export function applyTommyAnswers(state: QuoteSessionState, message: string): QuoteSessionState {
   if (!state.intake) return state
   const next = structuredClone(state)
   const answered = new Set(next.intake!.tommyAnswers || [])
   const details = { ...(next.intake!.tommyDetails || {}) }
   const raw = message.trim()
+  const diff = tommyDifferentialResult(raw, state)
+  // Dos respuestas distintas en el mismo mensaje invalidan solo ese campo.
+  // No borrar respuestas anteriores por copiar una pregunta sin contestarla.
+  for (const field of diff.conflicted) {
+    if (['escaleras', 'acarreo', 'embalaje'].includes(field)) {
+      answered.delete(field as TommyAnswer)
+      delete details[field as TommyAnswer]
+    }
+  }
   if (/^(no a todo|todo no|todos no)[.!\s]*$/i.test(removeAccents(raw))) {
     for (const field of ['escaleras', 'acarreo', 'embalaje'] as const) {
       answered.add(field); details[field] = 'No'
@@ -104,53 +151,62 @@ export function applyTommyAnswers(state: QuoteSessionState, message: string): Qu
     next.additionalServices.packing = false
     if (!next.intake!.serviceAnswers.includes('packing')) next.intake!.serviceAnswers.push('packing')
   }
-  const lines = raw.replace(/\r/g, '').split('\n')
-  for (const line of lines) {
-    const match = /^\s*(?:(4|5|6)\s*[).:-]\s*)?(escaleras?|distancia de carga|acarreo|embalaje|embalar)\s*:\s*(.*?)\s*$/i.exec(line)
-    if (!match) continue
-    const key = match[1] === '4' || /escalera/i.test(match[2]) ? 'escaleras'
-      : match[1] === '5' || /distancia de carga|acarreo/i.test(match[2]) ? 'acarreo' : 'embalaje'
-    const value = match[3]
-    if (!value || /^[¿?]/.test(value.trim()) || /^(indicanos|hay que|necesitas que|necesitas|que articulos|si es asi)/.test(normalizeValue(value))) continue
+  for (const entry of diff.answers) {
+    if (!(['escaleras','acarreo','embalaje'] as string[]).includes(entry.field)) continue
+    const key = entry.field as TommyAnswer
+    const value = entry.value.trim()
     const isNo = negative(value)
     const isYes = affirmative(value)
     if (key === 'escaleras') {
-      // Un simple "sí" no responde qué, dónde ni cuántos pisos.
-      const informative = /(origen|destino|ambos)\b/i.test(value) && /\b\d+(?:er|do|°|º)?\s*(?:pisos?|plantas?)\b/i.test(value) && /(cama|cajas?|sof[aá]|sill[oó]n|mesa|muebles?|televisor|lavadora|refrigerador|electrodom|art[ií]culos?|todos?|todo)/i.test(value)
+      // Sí necesita también ubicación, pisos y artículos; No se resuelve solo.
+      const informative = /\b(origen|destino|ambos)\b/i.test(value) &&
+        /\b(?:\d+(?:er|ro|do|°|º)?|uno|dos|tres|cuatro|cinco|primer|segundo|tercer)\s*(?:pisos?|plantas?)\b/i.test(value) &&
+        /\b(camas?|cajas?|sof[aá]s?|sill[oó]nes?|mesas?|escritorios?|muebles?|televisores?|lavadoras?|refrigeradores?|art[ií]culos?|todos?)\b/i.test(value)
       if (isNo || informative) { answered.add(key); details.escaleras = value }
-      else if (isYes) answered.delete(key)
+      else { answered.delete(key); delete details.escaleras }
     }
     if (key === 'acarreo') {
-      if (isNo || isYes || /\b\d+\s*(?:m|metros?)\b/i.test(value)) { answered.add(key); details.acarreo = value }
-      else answered.delete(key)
+      // Tommy pidió aclarar en cuál inmueble hay acarreo cuando es afirmativo.
+      const informative = /\b(origen|destino|ambos)\b/i.test(value) ||
+        /\b\d+(?:[.,]\d+)?\s*(?:metros?|m)\b/i.test(value)
+      if (isNo || informative) { answered.add(key); details.acarreo = value }
+      else { answered.delete(key); delete details.acarreo }
     }
     if (key === 'embalaje') {
-      const withObjects = /(solo|cajas?|vajilla|ropa|muebles?|cama|televis|fr[aá]gil|electrodom|loza|platos?|refrigerador|art[ií]culos?)/i.test(value)
-      if (isNo || withObjects) {
+      // La lista de objetos es abierta. No depender de un vocabulario cerrado.
+      // Se pide aclaración cuando solo hay un Sí, sin objetos identificados.
+      const hasObjects = !isNo && !/^(s[ií]|si por favor|s[ií] necesito|quiero embalaje|embalaje s[ií])\s*[.!,;]*$/i.test(value)
+        && /[\p{L}]{3,}/u.test(value)
+        && !/^(ind[ií]ca|necesitas que|qu[eé] art[ií]culos)/i.test(value)
+      if (isNo || hasObjects) {
         answered.add(key); details.embalaje = value
         next.additionalServices.packing = !isNo
         if (!next.intake!.serviceAnswers.includes('packing')) next.intake!.serviceAnswers.push('packing')
         if (!isNo) {
           const note = `EMBALAJE: ${value}`
-          if (!next.additionalServices.observations.includes(note)) {
-            next.additionalServices.observations = [next.additionalServices.observations === '__pending__' ? '' : next.additionalServices.observations, note].filter(Boolean).join('\n')
+          const observations = next.additionalServices.observations || ''
+          if (!observations.includes(note)) {
+            next.additionalServices.observations = [observations === '__pending__' ? '' : observations, note].filter(Boolean).join('\n')
           }
         }
-      } else if (isYes) answered.delete(key)
+      } else { answered.delete(key); delete details.embalaje }
     }
   }
-  // Declaraciones naturales inequívocas; no inferir a qué inmueble corresponden números sueltos.
-  const plain = removeAccents(raw)
-  if (!answered.has('escaleras') && /\b(sin escaleras|no (?:se |hay )?(?:usa[n]? |requiere[n]? )?escaleras)\b/.test(plain)) {
-    answered.add('escaleras'); details.escaleras = raw
-  }
-  if (!answered.has('acarreo') && /\b(sin acarreo|no hay (?:distancia de carga|acarreo)|camion (?:en|a) la puerta)\b/.test(plain)) {
-    answered.add('acarreo'); details.acarreo = raw
-  }
-  if (!answered.has('embalaje') && /\b(sin embalaje|no (?:necesito|quiero|requiero) embalaje)\b/.test(plain)) {
-    answered.add('embalaje'); details.embalaje = raw
-    next.additionalServices.packing = false
-    if (!next.intake!.serviceAnswers.includes('packing')) next.intake!.serviceAnswers.push('packing')
+  // Declaraciones naturales no copiadas. Una palabra del enunciado original
+  // nunca puede activar esta heurística.
+  if (!diff.copiedForm) {
+    const plain = removeAccents(raw)
+    if (!answered.has('escaleras') && /\b(sin escaleras|no (?:se |hay )?(?:usa[n]? |requiere[n]? )?escaleras)\b/.test(plain)) {
+      answered.add('escaleras'); details.escaleras = raw
+    }
+    if (!answered.has('acarreo') && /\b(sin acarreo|no hay (?:distancia de carga|acarreo)|camion (?:en|a) la puerta)\b/.test(plain)) {
+      answered.add('acarreo'); details.acarreo = raw
+    }
+    if (!answered.has('embalaje') && /\b(sin embalaje|no (?:necesito|quiero|requiero) embalaje)\b/.test(plain)) {
+      answered.add('embalaje'); details.embalaje = raw
+      next.additionalServices.packing = false
+      if (!next.intake!.serviceAnswers.includes('packing')) next.intake!.serviceAnswers.push('packing')
+    }
   }
   next.intake!.tommyAnswers = [...answered]
   next.intake!.tommyDetails = details
@@ -175,11 +231,12 @@ export function tommyCaseSummary(state: QuoteSessionState, estimated: number | n
 
 /** Las líneas numeradas de Tommy no son etiquetas antiguas de la ficha técnica. */
 export function isTommyFormReply(text: string): boolean {
-  return /^\s*(?:[1-6]\s*[).:-]\s*)?(?:direcciones? de origen y destino|lista de art[ií]culos|fecha del flete(?: o mudanza)?|escaleras?|distancia de carga|acarreo|embalaje)\s*:/im.test(text)
+  return /^\s*(?:[-•]\s*)?(?:[1-6]\s*[).:-]\s*)?(?:direcciones? de origen y destino|lista de art[ií]culos|fecha del flete(?: o mudanza)?|escaleras?|distancia de carga|acarreo|embalaje)\s*:/im.test(text)
 }
 
-/** Evita consumir IA en mensajes que contienen exclusivamente los 3 servicios de Tommy. */
+/** También acepta el mensaje de pendientes que el usuario copió entero. */
 export function isOnlyTommyServiceAnswers(text: string): boolean {
-  const lines = text.trim().split(/\r?\n/).map(line=>line.trim()).filter(Boolean)
-  return lines.length > 0 && lines.every(line => /^\s*(?:[456]\s*[).:-]\s*)?(?:escaleras?|distancia de carga|acarreo|embalaje)\s*:\s*\S+/i.test(line))
+  const d = tommyDifferentialResult(text)
+  return d.copiedForm && d.answers.length > 0 && !d.freeText &&
+    d.answers.every(answer => ['escaleras', 'acarreo', 'embalaje'].includes(answer.field))
 }

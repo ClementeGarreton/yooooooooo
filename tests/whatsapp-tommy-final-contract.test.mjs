@@ -94,9 +94,11 @@ test('un SÍ en escaleras necesita artículos, pisos y lado',()=>{
 
 test('un SÍ en embalaje sin artículos requiere precisión',()=>{
   const s=applyTommyAnswers(fill(state()),'4) Escaleras: No\n5) Distancia de carga: Sí\n6) Embalaje: Sí')
-  assert.deepEqual(tommyMissing(s),['embalaje'])
+  assert.deepEqual(tommyMissing(s),['acarreo','embalaje'])
   const s2=applyTommyAnswers(s,'6) Embalaje: Sí, solo vajilla')
-  assert.deepEqual(tommyMissing(s2),[])
+  assert.deepEqual(tommyMissing(s2),['acarreo'])
+  const s3=applyTommyAnswers(s2,'5) Distancia de carga: Sí, en destino')
+  assert.deepEqual(tommyMissing(s3),[])
   assert.equal(s2.additionalServices.packing,true)
   assert.match(s2.additionalServices.observations,/vajilla/)
 })
@@ -139,7 +141,7 @@ test('el formulario numerado no se interpreta como etiqueta técnica desconocida
   const reply='1) Direcciones de origen y destino: Apoquindo 111 Las Condes / Grecia 222 Ñuñoa\n2) Lista de artículos: dos camas\n4) Escaleras: No\n5) Distancia de carga: No\n6) Embalaje: No'
   assert.equal(isTommyFormReply(reply),true)
   const source=readFileSync(new URL('../src/lib/whatsapp/incomingProcessor.ts',import.meta.url),'utf8')
-  assert.match(source,/const labels = isTommyFormReply\(text\)/)
+  assert.match(source,/const labels = \(differential\.copiedForm \|\| isTommyFormReply\(text\)\)/)
   assert.equal(isTommyFormReply('NOMBRE: Camila'),false)
 })
 
