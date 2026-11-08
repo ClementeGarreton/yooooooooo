@@ -365,6 +365,7 @@ async function processTommyQuoteTurn(
       intake: { ...session.state.intake, tommySubmittedAt: undefined },
     })
   }
+  let nextState = session.state
   // Respuestas 4.1–4.7: cada Sí/No se interpreta por su número,
   // nunca como una confirmación para varias preguntas a la vez.
   if (isTommyAccessReply(text)) {
@@ -384,7 +385,6 @@ async function processTommyQuoteTurn(
   // No asignar un número/comuna a origen o destino cuando el cliente no lo especificó.
   const ambiguity = ambiguousGroupedReply(session.state, text)
   if (ambiguity) { await sendAndLog(conversationId, to, ambiguity); return }
-  let nextState = session.state
   if (isOnlyTommyServiceAnswers(text)) {
     nextState = applyTommyAnswers(nextState, text)
     if (nextState.intake) nextState.intake.stage = 'review'
