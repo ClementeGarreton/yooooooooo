@@ -20,19 +20,18 @@ const make = () => {
   }
 }
 
-test('presenta contrato-guía sin reserva ni pago y acepta descripción natural', () => {
-  assert.match(FREEFORM_START, /CONTRATO-GUÍA/)
-  assert.match(FREEFORM_START, /no es una reserva ni un contrato vinculante/)
-  assert.match(FREEFORM_START, /propias palabras/)
-  assert.match(FREEFORM_START, /un dato a la vez/)
-  assert.ok(FREEFORM_START.length < 4000)
+test('presenta orientación natural y servicios agrupados sin mensajes extensos', () => {
+  assert.match(FREEFORM_START, /Cuéntame en un mensaje/)
+  assert.match(FREEFORM_START, /EMBALAJE, DESARMADO, ARMADO, DESEMBALAJE/)
+  assert.match(FREEFORM_START, /libremente/)
+  assert.ok(FREEFORM_START.length < 700)
 })
 
 test('el primer pendiente corresponde a un único campo y da una pregunta acotada', () => {
   const state = make()
   const pending = nextIntakePending(state)
   assert.equal(pending.label, 'NOMBRE')
-  assert.match(formatIntakeNextPrompt(state), /Siguiente dato pendiente \(1 de/)
+  assert.match(formatIntakeNextPrompt(state), /Pendiente: NOMBRE/)
   assert.doesNotMatch(formatIntakeNextPrompt(state), /FICHA INTERPRETADA/)
 })
 

@@ -53,7 +53,7 @@ export interface PricingConfig {
 // Cache para evitar múltiples llamadas
 let pricingCache: PricingConfig | null = null
 let cacheTimestamp: number = 0
-const CACHE_DURATION = 5 * 60 * 1000 // 5 minutos
+const CACHE_DURATION = 0 // Tarifas: cada cálculo obtiene los valores vigentes; sin caché de cinco minutos.
 
 export async function getPricingConfig(): Promise<PricingConfig> {
   // Verificar cache
@@ -63,7 +63,7 @@ export async function getPricingConfig(): Promise<PricingConfig> {
   }
 
   try {
-    const response = await fetch('/api/admin/pricing-config')
+    const response = await fetch('/api/admin/pricing-config', { cache: 'no-store' })
     if (!response.ok) {
       throw new Error('Error obteniendo configuración de precios')
     }
@@ -78,9 +78,8 @@ export async function getPricingConfig(): Promise<PricingConfig> {
   } catch (error) {
     console.error('Error fetching pricing config:', error)
     
-    // Devolver configuración por defecto si falla. Es el MISMO objeto que usa el
-    // servidor cuando la tabla está vacía: antes eran dos copias escritas a mano.
-    return DEFAULT_PRICING_CONFIG
+    // Nunca presentar una tarifa antigua o ficticia como vigente tras un error de red.
+    throw error
   }
 }
 

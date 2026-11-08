@@ -868,7 +868,7 @@ export default function SummaryStep({ onPrevious, onReset }: SummaryStepProps) {
               <ul className="space-y-2 text-sm text-gray-700">
                 {[
                   'Comprobante de reserva inmediato',
-                  'Precio fijo sin sorpresas',
+                  'Precio estimativo sujeto a revisión humana',
                   'Carga protegida durante el traslado',
                 ].map((g) => (
                   <li key={g} className="flex gap-2">

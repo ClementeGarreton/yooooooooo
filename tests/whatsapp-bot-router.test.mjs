@@ -36,26 +36,26 @@ test('el primer mensaje muestra siempre el menú, incluso si es COTIZAR', () => 
   assert.equal(decideBotAction('COTIZAR', state({ mode: 'idle' }), START), 'start_quote')
 })
 
-test('modo idle: tras cinco minutos sin interacción exige volver al menú', () => {
+test('modo idle: tras cinco minutos un COTIZAR explícito retoma sin obligar al menú', () => {
   const idle = state({ mode: 'idle' })
   assert.equal(decideBotAction('COTIZAR', idle, START + MENU_IDLE_RESET_MS - 1), 'start_quote')
-  assert.equal(decideBotAction('COTIZAR', idle, START + MENU_IDLE_RESET_MS), 'welcome')
+  assert.equal(decideBotAction('COTIZAR', idle, START + MENU_IDLE_RESET_MS), 'start_quote')
   assert.equal(decideBotAction('hola', idle, START + MENU_IDLE_RESET_MS), 'welcome')
   assert.equal(decideBotAction('gracias', idle, START + MENU_IDLE_RESET_MS - 1), 'silent')
 })
 
-test('5 minutos de inactividad cierran autorización de cotizar', () => {
+test('cotización disponible por 24 h de actividad, reanudable cuando expira', () => {
   const current = state()
   assert.equal(decideBotAction('cama', current, START + QUOTE_IDLE_TIMEOUT_MS - 1), 'quote_message')
   assert.equal(decideBotAction('cama', current, START + QUOTE_IDLE_TIMEOUT_MS), 'expire_silent')
-  // Ni siquiera un COTIZAR directo reabre una sesión caducada sin informar.
-  assert.equal(decideBotAction('COTIZAR', current, START + QUOTE_IDLE_TIMEOUT_MS), 'expire_silent')
+  // Un comando explícito permite reautorizar la sesión conservada.
+  assert.equal(decideBotAction('COTIZAR', current, START + QUOTE_IDLE_TIMEOUT_MS), 'start_quote')
+  assert.equal(decideBotAction('Quiero retomar la conversación', current, START + QUOTE_IDLE_TIMEOUT_MS), 'start_quote')
 })
 
-test('15 minutos de duración máxima invalidan autorización aunque exista actividad', () => {
+test('una sesión antigua no caduca mientras el cliente esté activo', () => {
   const current = state({ last: START + QUOTE_MAX_DURATION_MS - 2_000 })
-  assert.equal(decideBotAction('respuesta', current, START + QUOTE_MAX_DURATION_MS - 1), 'quote_message')
-  assert.equal(decideBotAction('respuesta', current, START + QUOTE_MAX_DURATION_MS), 'expire_silent')
+  assert.equal(decideBotAction('respuesta', current, START + QUOTE_MAX_DURATION_MS), 'quote_message')
 })
 
 test('el usuario puede SALIR, pedir ASESOR o MENU aun con sesión caducada', () => {
@@ -75,6 +75,12 @@ test('el modo humano no responde automáticamente salvo comandos explícitos', (
 })
 
 test('fechas inválidas o ausentes desactivan OpenAI por seguridad', () => {
-  assert.equal(isQuoteExpired(state({ started: null })), true)
+  assert.equal(isQuoteExpired(state({ started: null }), START + 1), false) // La antigüedad no borra la cotización
   assert.equal(isQuoteExpired(state({ last: null })), true)
+})
+
+test('menú inicial no ofrece SALIR y RETOMAR no pierde la sesión', () => {
+  assert.equal(botCommand('RETOMAR'), 'RETOMAR')
+  assert.equal(botCommand('NUEVA COTIZACIÓN'), 'NUEVA')
+  assert.equal(decideBotAction('RETOMAR', state({ mode: 'idle' }), START), 'start_quote')
 })

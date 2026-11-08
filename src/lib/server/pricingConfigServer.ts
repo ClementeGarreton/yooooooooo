@@ -88,7 +88,7 @@ export async function readPricingConfig(): Promise<PricingConfig> {
     basePrice: config.base_price,
     pricePerCubicMeter: config.price_per_cubic_meter,
     pricePerKilometer: config.price_per_kilometer,
-    freeKilometers: config.free_kilometers || 50,
+    freeKilometers: config.free_kilometers ?? 50,
     floorSurcharge: config.floor_surcharge,
     additionalServices: withServiceDefaults(config.additional_services) as PricingConfig['additionalServices'],
     specialPackaging: config.special_packaging,

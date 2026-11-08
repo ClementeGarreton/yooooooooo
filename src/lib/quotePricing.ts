@@ -44,6 +44,8 @@ export interface QuotePropertyInput {
 
 /** Los servicios que el cliente marcó. Solo los que mueven el precio. */
 export interface QuoteServicesInput {
+  packing?: boolean
+  unpacking?: boolean
   disassembly?: boolean
   assembly?: boolean
   fridgeDisassembly?: boolean
@@ -153,7 +155,7 @@ export function calculateQuote(input: QuotePricingInput): QuotePricingResult {
   basePrice += totalVolume * pricing.pricePerCubicMeter
 
   // Ajuste por distancia (solo se cobran los km posteriores a los gratis)
-  const freeKilometers = pricing.freeKilometers || 50
+  const freeKilometers = pricing.freeKilometers ?? 50
   const chargeableKm = Math.max(0, distance - freeKilometers)
   basePrice += chargeableKm * pricing.pricePerKilometer
 
@@ -193,7 +195,10 @@ export function calculateQuote(input: QuotePricingInput): QuotePricingResult {
   // Servicios adicionales
   if (services.disassembly) basePrice += pricing.additionalServices.disassembly
   if (services.assembly) basePrice += pricing.additionalServices.assembly
-  // packing y unpacking requieren contacto con ejecutivo, no se suman al precio
+  // Tarifas globales por contratación del servicio, editables en Configuración > Precios.
+  // Son distintas del embalaje especial por ítem (se cotiza aparte).
+  if (services.packing) basePrice += pricing.additionalServices.packing
+  if (services.unpacking) basePrice += pricing.additionalServices.unpacking
 
   // Desarmado de refrigerador: va acá, junto al desarme y el armado, porque es el mismo
   // tipo de cobro (mano de obra) y sigue su misma suerte —recargo del día y

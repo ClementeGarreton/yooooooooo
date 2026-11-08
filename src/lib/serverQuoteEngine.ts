@@ -101,7 +101,8 @@ export async function calculateSessionQuote(state: QuoteSessionState) {
     dateTime: state.schedule.date ? `${state.schedule.date}T${state.schedule.time || '12:00'}:00` : null,
     isFlexible: state.schedule.isFlexible,
     isCompany: state.personalInfo.isCompany,
-    additionalServices: { disassembly: state.additionalServices.disassembly, assembly: state.additionalServices.assembly },
+    additionalServices: { disassembly: state.additionalServices.disassembly, assembly: state.additionalServices.assembly,
+      packing: state.additionalServices.packing, unpacking: state.additionalServices.unpacking },
     pricing,
   })
 
@@ -259,6 +260,17 @@ async function upsertProspect(state: QuoteSessionState, quoteId: string, quote: 
       quantity: item.quantity,
       volume: parseFloat((item.volume * item.quantity).toFixed(2)),
     })),
+    quote_state: {
+      v: 1,
+      dateTime: state.schedule.date ? `${state.schedule.date}T${state.schedule.time || '12:00'}:00` : null,
+      isFlexible: state.schedule.isFlexible,
+      origin: { address: state.origin.address, details: state.origin.details },
+      destination: { address: state.destination.address, details: state.destination.details },
+      stops: [],
+      items: quote.items.map((item) => ({ id: item.id, name: item.name, volume: item.volume,
+        weight: item.weight, quantity: item.quantity, isFragile: item.isFragile, isGlass: item.isGlass })),
+      additionalServices: { ...state.additionalServices },
+    },
     additional_services: {
       disassembly: state.additionalServices.disassembly,
       assembly: state.additionalServices.assembly,

@@ -7,20 +7,15 @@ export type IntakeService = 'packing' | 'disassembly' | 'assembly' | 'unpacking'
 export const INTAKE_SERVICES: IntakeService[] = ['packing', 'disassembly', 'assembly', 'unpacking']
 
 export const FREEFORM_START = [
-  '📄 *SOLICITUD DE MUDANZA — CONTRATO-GUÍA*',
-  'Este borrador sirve para conocer el trabajo y preparar un presupuesto; *no es una reserva ni un contrato vinculante*.',
+  '¡Vamos con tu cotización! Cuéntame en un mensaje:',
+  '• Nombre, correo y boleta/factura.',
+  '• Fecha y hora, origen y destino.',
+  '• Piso, ascensor y estacionamiento de ambos lugares.',
+  '• Muebles y cantidades (puedes adjuntar fotos).',
+  '• Servicios: EMBALAJE, DESARMADO, ARMADO, DESEMBALAJE: SÍ/NO y qué muebles.',
   '',
-  '*1. Solicitante:* nombre, correo, BOLETA o FACTURA (si es factura: razón social y RUT).',
-  '*2. Fecha:* día, hora y si puedes cambiar la fecha.',
-  '*3. Trayecto:* dirección de ORIGEN y DESTINO (calle, número, comuna y región).',
-  '*4. Acceso en cada lugar:* casa/departamento/oficina/bodega, piso, ascensor SÍ/NO, metros entre la entrada y donde estaciona el camión.',
-  '*5. Inventario:* muebles, electrodomésticos y cajas con sus cantidades. Puedes enviar fotos.',
-  '*6. Servicios:* EMBALAJE, DESARMADO, ARMADO y DESEMBALAJE; indica SÍ/NO y a qué objetos se aplica cada servicio.',
-  '*7. Observaciones:* horarios, restricciones y cualquier detalle relevante.',
-  '',
-  '✍️ *No tienes que llenar las cláusulas una por una.* Cuéntame todo con tus propias palabras en un solo mensaje, o copia estas cláusulas y escribe tu información debajo de cada una.',
-  'Yo interpretaré lo que dices y te mostraré *una ficha con variables* y los datos entendidos. Corregiremos o detallaremos *solo lo pendiente, un dato a la vez*. Puedes completar varios datos juntos si prefieres.',
-  'Escribe *FICHA* para volver a ver los datos, *ASESOR* para atención humana o *SALIR* para terminar. *CONFIRMAR* generará precio y PDF únicamente cuando los datos estén completos.',
+  'Puedes contarme todo libremente. Te mostraré lo entendido para corregirlo.',
+  'Escribe *FICHA* para revisar, *ASESOR* para atención humana.',
 ].join('\n')
 
 const noAccent = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -284,7 +279,7 @@ export function nextIntakePending(state: QuoteSessionState): { label: string; qu
           : label.startsWith('DOCUMENTO')
             ? '¿Necesitas BOLETA o FACTURA?'
             : ['EMBALAJE', 'DESARMADO', 'ARMADO', 'DESEMBALAJE'].includes(label)
-              ? `¿Necesitas ${label.toLowerCase()}? Responde SÍ o NO; si es para objetos específicos, indícalos.`
+              ? 'Responde juntos: EMBALAJE, DESARMADO, ARMADO y DESEMBALAJE: SÍ/NO. Si alguno es SÍ, indica para qué objetos. Puedes escribir SERVICIOS: NINGUNO.'
               : label === 'ORIGEN' || label === 'DESTINO'
                 ? '¿Es casa, departamento, oficina o bodega?'
                 : `Indica ${label.toLowerCase()}.`
@@ -297,7 +292,7 @@ export function formatIntakeNextPrompt(state: QuoteSessionState): string {
   const inputLabel = pending.label.startsWith('DOCUMENTO') ? 'DOCUMENTO'
     : pending.label.startsWith('FECHA') ? 'FECHA'
       : pending.label.startsWith('HORA') ? 'HORA' : pending.label
-  return `✏️ *Siguiente dato pendiente (1 de ${pending.remaining}): ${pending.label}*\n${pending.question}\n\nPuedes responder directamente, usar \`${inputLabel}: valor\`, o escribir *FICHA* para ver todo. También puedes enviar varios datos juntos.`
+  return `✏️ *Pendiente: ${pending.label}*\n${pending.question}\nResponde directamente o escribe *FICHA* para revisar tus datos.`
 }
 
 /** Una respuesta organizada según las cláusulas se parsea como relato, no como etiqueta incorrecta. */

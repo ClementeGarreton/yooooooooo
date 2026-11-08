@@ -9,6 +9,8 @@ import {
   withStairsDefaults,
 } from '@/lib/server/pricingConfigServer'
 
+export const dynamic = 'force-dynamic'
+
 // Las normalizaciones y la lectura viven en `server/pricingConfigServer.ts`: el endpoint
 // de cotización necesita exactamente la misma configuración y no puede pedírsela a esta
 // ruta por HTTP. Acá queda el contrato HTTP (GET para el cotizador público, PUT para el
@@ -50,12 +52,20 @@ export async function PUT(request: NextRequest) {
       }
     }
 
+    // No aceptar valores negativos o no numéricos: una tarifa corrupta altera todas las cotizaciones.
+    const tariffs = [body.basePrice, body.pricePerCubicMeter, body.pricePerKilometer, body.freeKilometers,
+      body.floorSurcharge, body.additionalServices?.packing, body.additionalServices?.unpacking,
+      body.additionalServices?.disassembly, body.additionalServices?.assembly]
+    if (tariffs.some(value => typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+      return NextResponse.json({ error: 'Las tarifas deben ser números mayores o iguales a cero' }, { status: 400 })
+    }
+
     // Transformar los datos del frontend al formato de la BD
     const dbData = {
       base_price: body.basePrice,
       price_per_cubic_meter: body.pricePerCubicMeter,
       price_per_kilometer: body.pricePerKilometer,
-      free_kilometers: body.freeKilometers || 50,
+      free_kilometers: body.freeKilometers ?? 50,
       floor_surcharge: body.floorSurcharge,
       additional_services: withServiceDefaults(body.additionalServices),
       special_packaging: body.specialPackaging,

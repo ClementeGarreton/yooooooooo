@@ -15,6 +15,7 @@ import {
   XCircle
 } from 'lucide-react'
 import toast from 'react-hot-toast'
+import { clearPricingCache } from '@/lib/pricingService'
 import UfSettingCard from './UfSettingCard'
 import RecommenderRewardCard from './RecommenderRewardCard'
 
@@ -106,7 +107,8 @@ export default function PricingConfiguration({ canEdit = true }: { canEdit?: boo
         throw new Error('Error al guardar configuración')
       }
 
-      toast.success('Configuración de precios guardada exitosamente')
+      clearPricingCache()
+      toast.success('Tarifas vigentes actualizadas para las siguientes cotizaciones')
       setShowConfirmModal(false)
       setHasChanges(false)
     } catch (error) {
@@ -367,6 +369,17 @@ export default function PricingConfiguration({ canEdit = true }: { canEdit?: boo
             <h3 className="text-lg font-semibold">Servicios Adicionales</h3>
           </div>
           <div className="space-y-4">
+            <p className="text-sm text-gray-600">Estos importes se aplican a cada cotización nueva si el cliente solicita el servicio.</p>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Servicio de embalaje (CLP)</label>
+              <Input type="number" min="0" value={config.additionalServices.packing}
+                onChange={(e) => handleInputChange('additionalServices.packing', Number(e.target.value))} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Servicio de desembalaje (CLP)</label>
+              <Input type="number" min="0" value={config.additionalServices.unpacking}
+                onChange={(e) => handleInputChange('additionalServices.unpacking', Number(e.target.value))} />
+            </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Desarme de Muebles (CLP)

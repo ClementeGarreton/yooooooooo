@@ -42,6 +42,8 @@ import toast from 'react-hot-toast'
 import RowMenu from './RowMenu'
 import PdfDownloadMenu from './PdfDownloadMenu'
 import QuoteItemsPricing from './QuoteItemsPricing'
+import HandoffQueue from './HandoffQueue'
+import ProspectPriceReview from './ProspectPriceReview'
 import {
   SOURCE_OPTIONS,
   normalizeOrigin,
@@ -938,6 +940,7 @@ export default function ProspectsManagement({ onEditQuote }: { onEditQuote?: () 
 
   return (
     <div className="space-y-6">
+      <HandoffQueue />
       {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
@@ -1576,6 +1579,14 @@ export default function ProspectsManagement({ onEditQuote }: { onEditQuote?: () 
                 )}
               </div>
             )}
+
+            <ProspectPriceReview
+              prospect={selectedProspect}
+              onSaved={(updated) => {
+                setSelectedProspect(updated as Prospect)
+                setProspects(prev => prev.map(row => row.id === updated.id ? updated as Prospect : row))
+              }}
+            />
 
             {/* Items cotizados, agrupados por tipo de embalaje y con edición de precios */}
             <QuoteItemsPricing

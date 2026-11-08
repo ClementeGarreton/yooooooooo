@@ -5,6 +5,7 @@ import { messageContext, conversationKey, customerPhone,
 } from '@/lib/whatsapp/messageTransport'
 import {
   createWhatsAppSession,
+  getOrCreateWhatsAppSession,
   closeQuoteSession,
   getNextSection,
   mutateQuoteSessionAtomically,
@@ -27,6 +28,7 @@ import {
   resolvePendingInventoryChoice,
 } from '@/lib/ai/whatsappQuoteAssistant'
 import { generateQuoteFromSession } from '@/lib/serverQuoteEngine'
+import { createHandoffRequest, collectHandoffDetails } from '@/lib/whatsapp/handoffRequests'
 import { saveQuotePhoto } from '@/lib/whatsapp/photoStorage'
 import { canCloseInventory, isInventoryAddition, upsertInventoryPhoto } from '@/lib/whatsapp/inventoryResolution'
 import { applyInventoryEdits, parseInventoryEdits, type CatalogInventoryItem } from '@/lib/whatsapp/inventoryEdits'
@@ -165,11 +167,12 @@ async function handleHumanHandoff(session: QuoteSessionRow, conversationId: stri
   await saveQuoteSession(session.id, session.state, { status: 'handoff' })
   await setBotMode(normalizePhone(to), 'human')
   await updateConversation(conversationId, { status: 'handoff' })
+  await createHandoffRequest({ phone: normalizePhone(to), session })
   await logAction({ conversationId, action: 'human_handoff_requested', payload: { quoteSessionId: session.id } })
   await sendAndLog(
     conversationId,
     to,
-    'Perfecto. Desde aquí puedes afinar los detalles de tu mudanza con nuestro ejecutivo. Ya dejamos a mano lo que conversamos para que no tengas que empezar de cero.'
+    'Te atenderá nuestro equipo. ¿Cuál es el motivo: reclamo, cotización, seguimiento o problema con el cotizador? Si tienes un número de cotización, indícalo también. Tu teléfono y lo conversado ya quedaron registrados.'
   )
 }
 
@@ -213,11 +216,12 @@ async function finalizeQuote(session: QuoteSessionRow, conversationId: string, t
   const resumeUrl = `${site}/cotizador?session=${encodeURIComponent(session.id)}&token=${encodeURIComponent(session.resume_token)}`
 
   const summary = [
-    '✅ *Tu cotización automática está lista*',
+    '✅ *Tu cotización estimativa está lista*',
     `Cotización: ${quote.quoteId}`,
     `Volumen estimado: ${quote.totalVolume.toFixed(2)} m³`,
     `Distancia estimada: ${quote.totalDistance.toFixed(1)} km`,
     `Valor estimado: $${quote.estimatedPrice.toLocaleString('es-CL')}`,
+    'Este valor está sujeto a revisión humana y puede ajustarse antes de confirmar el trabajo.',
     '',
     `Puedes revisar los datos también en la web: ${resumeUrl}`,
     '',
@@ -489,65 +493,73 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
     return
   }
 
-  if (decision === 'start_quote') {
-    // Revocar sesiones previas incompletas. COTIZAR es la única puerta de entrada.
-    if (bot.mode === 'quoting') await deactivateBot(phone, bot, 'idle')
-    const { error } = await supabaseAdmin
-      .from('quote_sessions')
-      .update({ status: 'closed', updated_at: new Date().toISOString() })
-      .eq('channel', 'whatsapp')
-      .eq('phone', phone)
-      .in('status', ['collecting', 'ready'])
-    if (error) throw new Error(error.message)
-
-    let session = await createWhatsAppSession(phone, customerPhone(to))
-    // Instagram conserva por ahora su flujo anterior; esta reprogramación es de WhatsApp.
-    if (messageContext.getStore()?.platform === 'instagram') {
+  if (decision === 'start_quote' || decision === 'start_new_quote') {
+    if (decision === 'start_new_quote') {
+      // Solo NUEVA cierra deliberadamente una cotización anterior; COTIZAR/RETOMAR la conserva.
+      if (bot.mode === 'quoting') await deactivateBot(phone, bot, 'idle')
+      const { error } = await supabaseAdmin.from('quote_sessions')
+        .update({ status: 'closed', updated_at: new Date().toISOString() })
+        .eq('channel', 'whatsapp').eq('phone', phone).in('status', ['collecting', 'ready'])
+      if (error) throw new Error(error.message)
+    }
+    let session = decision === 'start_new_quote'
+      ? await createWhatsAppSession(phone, customerPhone(to))
+      : await getOrCreateWhatsAppSession(phone)
+    if (messageContext.getStore()?.platform === 'instagram' && session.state.intake) {
       session = await saveQuoteSession(session.id, { ...session.state, intake: undefined })
     }
     await setBotMode(phone, 'quoting', session.id)
     const conversation = await findOrCreateWhatsAppConversation(phone, session.id, message.profileName)
     const conversationId = conversation.id as string
     await moveIncomingToConversation(message.id, conversationId)
-    await sendAndLog(conversationId, to, session.state.intake ? FREEFORM_START : sectionQuestion(1, session.state))
+    const resumed = Date.now() - Date.parse(session.created_at) > 10_000
+    if (resumed && session.state.intake?.stage === 'review') {
+      await sendFreeformReview(session, conversationId, to, 'Retomamos tu cotización donde quedó.', 'next')
+    } else {
+      await sendAndLog(conversationId, to, resumed
+        ? `Retomamos tu cotización.\n${await nextQuestion(session.state)}`
+        : session.state.intake ? FREEFORM_START : sectionQuestion(1, session.state))
+    }
     return
   }
 
   if (decision === 'human' || decision === 'exit' || decision === 'menu') {
+    // MENÚ no destruye la cotización; SALIR es la única salida que la cierra.
+    if (decision === 'menu') {
+      await setBotMode(phone, 'idle')
+      await sendWhatsAppText(to, WHATSAPP_WELCOME)
+      return
+    }
+    let session: QuoteSessionRow | null = null
+    if (decision === 'human' && bot.quote_session_id) {
+      const found = await supabaseAdmin.from('quote_sessions').select('*').eq('id', bot.quote_session_id).maybeSingle()
+      if (found.error) throw new Error(found.error.message)
+      session = found.data as QuoteSessionRow | null
+    }
     await deactivateBot(phone, bot, decision === 'human' ? 'human' : 'idle')
     if (decision === 'human') {
-      await sendWhatsAppText(to, 'Te atenderá una persona por este mismo chat. El asistente automático queda desactivado. Para cotizar con IA, escribe *COTIZAR*.')
-    } else if (decision === 'exit') {
-      await sendWhatsAppText(to, 'Atención automática finalizada. Puedes escribir *COTIZAR* para comenzar otra cotización o *ASESOR* para atención humana.')
+      await createHandoffRequest({ phone, session })
+      await sendWhatsAppText(to,
+        'Te atenderá nuestro equipo. ¿Cuál es el motivo: reclamo, cotización, seguimiento o problema con el cotizador? Si tienes número de cotización, inclúyelo. Tu teléfono ya quedó registrado.')
     } else {
-      await sendWhatsAppText(to, WHATSAPP_WELCOME)
+      await sendWhatsAppText(to, 'Atención terminada. Para volver, escribe *COTIZAR* o *ASESOR*.')
     }
     return
   }
 
   if (decision === 'expire_silent') {
-    // No se envían mensajes espontáneos. Al siguiente mensaje del cliente,
-    // se informa una sola vez que la autorización ya caducó.
-    await deactivateBot(phone, bot, 'idle')
-    await sendWhatsAppText(to, `¡Hola de nuevo! 😊💚
-
-Parece que nos tomamos un pequeño descanso. Tu cotización anterior se cerró automáticamente, pero ¡no te preocupes! Estamos encantados de ayudarte nuevamente.
-
-¿Qué te gustaría hacer?
-
-📝 *COTIZAR* — Comenzar una nueva cotización.
-
-🤝 *ASESOR* — Hablar directamente con nuestro equipo.
-
-👋 *SALIR* — Finalizar la atención automática.
-
-¡Estamos aquí para ayudarte! 🚚✨`)
+    // Detener autorización de IA, NO borrar la cotización. El cliente puede reanudarla.
+    await setBotMode(phone, 'idle')
+    await sendWhatsAppText(to, 'Tu cotización sigue guardada. Escribe *RETOMAR* para continuar donde quedaste, o *ASESOR* para hablar con nosotros.')
     return
   }
 
   if (decision === 'silent') {
+    if (bot.mode === 'human' && await collectHandoffDetails(phone, message.text)) {
+      await sendWhatsAppText(to, 'Gracias. Ya registramos el motivo y los antecedentes para que nuestro equipo te atienda.')
+    }
     if (bot.mode === 'idle') await touchIdleActivity(phone)
-    return // Atención humana: silencio total, no llama OpenAI.
+    return
   }
 
   // Solo se llega aquí con una sesión iniciada explícitamente por COTIZAR.

@@ -208,7 +208,7 @@ export async function getOrCreateWhatsAppSession(phone: string): Promise<QuoteSe
     .select('*')
     .eq('channel', 'whatsapp')
     .eq('phone', phone)
-    .in('status', ['collecting', 'ready', 'quoted', 'handoff'])
+    .in('status', ['collecting', 'ready'])
     .order('updated_at', { ascending: false })
     .limit(1)
     .maybeSingle()
