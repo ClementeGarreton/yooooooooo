@@ -48,7 +48,10 @@ export async function POST(request: NextRequest) {
     await logAdminAction({ actor: getActorFromRequest(request), request,
       action: 'prospect.price_adjusted', entityType: 'prospect', entityId: prospectId,
       entityLabel: prospect.name, summary: `Revisó los componentes del precio; valor estimado $${result.reviewed}`,
-      changes: { original: prospect.adjusted_price ?? prospect.total_price, review } })
+      changes: {
+        adjusted_price: { from: prospect.adjusted_price ?? prospect.total_price, to: result.reviewed },
+        price_review: { from: prospect.price_review ?? null, to: review },
+      } })
     return NextResponse.json({ success: true, prospect: data, review })
   } catch (error) {
     if (error instanceof Error && /Tarifa|tarifas|válido|desconocida|inválidas/.test(error.message)) {
