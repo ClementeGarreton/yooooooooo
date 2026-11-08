@@ -48,13 +48,17 @@ test('respuesta breve al piso pendiente se interpreta determinísticamente, sin 
   state.origin.details.propertyType = 'departamento'
   state.origin.details.hasElevator = false
   state.destination.details.hasElevator = false
+  // Sólo resta un dato numérico: así no se confunde un piso con un número de casa
+  state.destination.details.floor = 0
+  state.origin.details.parkingDistance = 15
+  state.destination.details.parkingDistance = 0
   state.intake.serviceAnswers = ['packing','disassembly','assembly','unpacking']
   const edit = inferSinglePendingEdit(state, '5')
   assert.equal(edit, 'PISO ORIGEN SI APLICA: 5')
   const result = applyLabelEdits(state, edit)
   assert.deepEqual(result.errors, [])
   assert.equal(result.state.origin.details.floor, 5)
-  assert.equal(result.state.destination.details.floor, null)
+  assert.equal(result.state.destination.details.floor, 0)
 })
 
 test('respuesta sí/no al ascensor se procesa sólo para el lado correspondiente', () => {
@@ -80,7 +84,7 @@ test('mensajes elaborados no quedan reducidos al siguiente campo', () => {
 test('la ruta incluye revisión completa inicial y edición guiada posterior', () => {
   const src = readFileSync(new URL('../src/lib/whatsapp/incomingProcessor.ts', import.meta.url), 'utf8')
   assert.match(src, /inferSinglePendingEdit\(session\.state, text\)/)
-  assert.match(src, /sendFreeformReview\(session, conversationId, to, availability \|\| '✓ Corrección registrada\.', 'next'\)/)
+  assert.match(src, /sendFreeformReview\(session, conversationId, to, availability, 'next'\)/)
   assert.match(src, /if \(\/\^\(ficha\|resumen\|ver ficha\)/)
 })
 

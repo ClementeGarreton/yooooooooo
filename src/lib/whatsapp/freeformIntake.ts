@@ -119,6 +119,14 @@ export function applyLabelEdits(state: QuoteSessionState, input: string): LabelE
     } else errors.push(`Línea sin variable: ${line}`)
   }
   if (!entries.length) return { state: next, changed, errors, inventory, recognized: false }
+  // Los relatos de ubicación con "Origen: depto en Las Condes, piso 5..."
+  // contienen VARIAS propiedades, no son una asignación ORIGEN=tipo de inmueble.
+  // Delegar el texto completo al parser estructurado en vez de rechazarlo.
+  if (entries.some(({ label, value }) =>
+    (label === 'ORIGEN' || label === 'DESTINO') &&
+    !propertyTypes.has(normalizeLabel(value).toLowerCase()))) {
+    return { state: structuredClone(state), changed: [], errors: [], inventory: null, recognized: false }
+  }
   const focus = entries.some((row) => row.label === 'ORIGEN') && !entries.some((row) => row.label === 'DESTINO') ? 'ORIGEN'
     : entries.some((row) => row.label === 'DESTINO') && !entries.some((row) => row.label === 'ORIGEN') ? 'DESTINO' : null
   const assign = (target: object, key: string, value: unknown, label: string) => {
@@ -239,9 +247,18 @@ export function applyLabelEdits(state: QuoteSessionState, input: string): LabelE
       }
       if (label.startsWith('CALLE ')) { assign(side.address, 'street', value, label); continue }
       if (label.startsWith('NUMERO ') || label.startsWith('NÚMERO ')) { assign(side.address, 'number', value, label); continue }
-      if (label.startsWith('COMUNA ')) { assign(side.address, 'commune', value, label); continue }
+      if (label.startsWith('COMUNA ')) {
+        assign(side.address, 'commune', value, label)
+        const metro = new Set(['lascondes','providencia','nunoa','santiago','lareina','vitacura','lo barnechea'.replace(/\s/g,''),'macul','penalolen','estacioncentral','maipu','puentealto','quilicura','independencia','recoleta','sanmiguel','sanjoaquin','huechuraba'])
+        if (!present(side.address.region) && metro.has(normalizeLabel(value).toLowerCase().replace(/\s/g,''))) {
+          assign(side.address, 'region', 'metropolitana', `REGIÓN ${sideName}`)
+        }
+        continue
+      }
       if (label.startsWith('REGION ') || label.startsWith('REGIÓN ')) {
-        const region = normalizeLabel(value).toLowerCase().replace(/\s+/g, '')
+        const rawRegion = normalizeLabel(value).toLowerCase().replace(/\s+/g, '')
+        const region = rawRegion === 'rm' || rawRegion === 'regionmetropolitana' || rawRegion === 'santiago'
+          ? 'metropolitana' : rawRegion
         if (!regionCodes.has(region)) errors.push(`${label}: región no reconocida`)
         else assign(side.address, 'region', region, label)
         continue
@@ -270,7 +287,10 @@ export function applyLabelEdits(state: QuoteSessionState, input: string): LabelE
   return { state: markServiceAnswers(next, []), changed, errors, inventory, recognized: true }
 }
 
-/** Progreso explícito, sin repetir todo el formulario después de cada respuesta. */
+/**
+ * Agrupa todas las respuestas pendientes: el usuario puede resolverlas EN UN mensaje.
+ * No hacer un ping-pong de hasta 17 preguntas aisladas por WhatsApp.
+ */
 export function nextIntakePending(state: QuoteSessionState): { label: string; question: string; remaining: number } | null {
   const missing = intakeMissing(state)
   if (!missing.length) return null
@@ -287,45 +307,53 @@ export function nextIntakePending(state: QuoteSessionState): { label: string; qu
     return {
       label: 'CONFIRMACIONES', remaining: missing.length,
       question: [
-        '*Respondamos todas las preguntas SÍ/NO juntas.*',
-        'Copia las líneas que faltan y escribe SÍ o NO:',
+        '*Confirmemos los servicios de una vez:*',
         ...booleanPending.map((label) => `${label}: SÍ/NO`),
-        'Si algún servicio es SÍ, indica qué muebles (ej.: DESARMADO: SÍ, dos camas).',
-        'Si todo es NO, basta con responder *NO A TODO*.',
+        'Puedes responder todo junto, indicando los muebles si pides un servicio.',
+        'Si todo es NO, escribe *NO A TODO*.',
         'Si solo rechazas los servicios: *SERVICIOS: NINGUNO*.',
       ].join('\n'),
     }
   }
-  const label = missing[0]
-  const question = label === 'INVENTARIO'
-    ? (state.pendingInventory.length
-      ? `Debo aclarar este artículo antes de cotizar: ${state.pendingInventory[0].question}`
-      : 'Indica los muebles y sus cantidades (por ejemplo: 2 camas de dos plazas, 10 cajas). También puedes enviar fotos.')
-    : label.startsWith('DISTANCIA')
-      ? '¿A cuántos metros de la entrada puede estacionarse el camión? (0 si estaciona en la puerta).'
-      : label.startsWith('PISO')
-        ? '¿En qué piso se encuentran los objetos? (0 para planta baja).'
-        : label.startsWith('ASCENSOR')
-          ? '¿Hay ascensor disponible para la mudanza? Responde SÍ o NO.'
-          : label.startsWith('DOCUMENTO')
-            ? '¿Necesitas BOLETA o FACTURA?'
-            : ['EMBALAJE', 'DESARMADO', 'ARMADO', 'DESEMBALAJE'].includes(label)
-              ? 'Responde juntos: EMBALAJE, DESARMADO, ARMADO y DESEMBALAJE: SÍ/NO. Si alguno es SÍ, indica para qué objetos. Puedes escribir SERVICIOS: NINGUNO.'
-              : label === 'ORIGEN' || label === 'DESTINO'
-                ? '¿Es casa, departamento, oficina o bodega?'
-                : `Indica ${label.toLowerCase()}.`
-  return { label, question, remaining: missing.length }
+
+  // Mostrar lo que falta POR GRUPOS, no una pregunta por cada variable.
+  // Las etiquetas completas siguen disponibles con el comando FICHA.
+  const basics: Array<[string, string]> = [
+    ['NOMBRE', 'nombre'], ['CORREO', 'correo'],
+    ['DOCUMENTO (BOLETA o FACTURA)', 'boleta o factura'],
+    ['RAZÓN SOCIAL', 'razón social'], ['RUT EMPRESA', 'RUT empresa'],
+    ['FECHA (AAAA-MM-DD)', 'fecha'], ['HORA (HH:MM)', 'hora'],
+  ]
+  const locationFields = (side: 'ORIGEN' | 'DESTINO'): Array<[string, string]> => [
+    [`CALLE ${side}`, 'calle'], [`NÚMERO ${side}`, 'número'],
+    [`COMUNA ${side}`, 'comuna'], [`REGIÓN ${side}`, 'región'],
+    [side, 'casa/depto/oficina/bodega'], [`PISO ${side} SI APLICA`, 'piso (0 para planta baja)'],
+    [`DISTANCIA ENTRADA/ESTACIONAMIENTO ${side} (M)`, 'metros desde camión a entrada (0 si estaciona en la puerta)'],
+  ]
+  const selections = (pairs: Array<[string, string]>) =>
+    pairs.filter(([key]) => missing.includes(key)).map(([, name]) => name)
+  const lines = [
+    '*Completemos lo que falta en un solo mensaje:*',
+  ]
+  const b = selections(basics)
+  if (b.length) lines.push(`• *Datos:* ${b.join(', ')}.`)
+  const origin = selections(locationFields('ORIGEN'))
+  if (origin.length) lines.push(`• *Origen:* ${origin.join(', ')}.`)
+  const destination = selections(locationFields('DESTINO'))
+  if (destination.length) lines.push(`• *Destino:* ${destination.join(', ')}.`)
+  if (missing.includes('INVENTARIO')) {
+    lines.push(state.pendingInventory.length
+      ? `• *Inventario:* aclara este artículo: ${state.pendingInventory[0].question}`
+      : '• *Inventario:* muebles y cantidades (también puedes enviar fotos).')
+  }
+  lines.push('Escribe en tus palabras, pero separa claramente *origen* y *destino*. Si prefieres revisar cada variable, escribe *FICHA*.')
+  return { label: 'DATOS PENDIENTES', remaining: missing.length, question: lines.join('\n') }
 }
 
 export function formatIntakeNextPrompt(state: QuoteSessionState): string {
   const pending = nextIntakePending(state)
-  if (!pending) return '✅ Datos completos. Revisa la ficha y responde *CONFIRMAR* solo si todo está correcto. Escribe *FICHA* para verla.'
-  const inputLabel = pending.label.startsWith('DOCUMENTO') ? 'DOCUMENTO'
-    : pending.label.startsWith('FECHA') ? 'FECHA'
-      : pending.label.startsWith('HORA') ? 'HORA' : pending.label
-  return pending.label === 'CONFIRMACIONES'
-    ? `${pending.question}\nEscribe *FICHA* si quieres revisar todos los datos.`
-    : `✏️ *Pendiente: ${pending.label}*\n${pending.question}\nResponde directamente o escribe *FICHA* para revisar tus datos.`
+  if (!pending) return '✅ *Datos completos.* Escribe *FICHA* para revisar el detalle o *CONFIRMAR* para generar la cotización estimativa.'
+  return pending.question
 }
 
 /** Una respuesta organizada según las cláusulas se parsea como relato, no como etiqueta incorrecta. */
@@ -333,28 +361,77 @@ export function isContractClauseReply(text: string): boolean {
   return /(?:^|\n)\s*[1-7][.)]\s*(?:solicitante|fecha|trayecto|acceso(?: en cada lugar)?|inventario|servicios|observaciones)\s*:/im.test(text)
 }
 
-/** Respuestas aisladas de una sola variable: evita gastar una inferencia para "5" o "sí". */
+/** Una respuesta corta sin etiqueta solo se asigna cuando no hay ambigüedad. */
 export function inferSinglePendingEdit(state: QuoteSessionState, text: string): string | null {
   if (state.intake?.stage !== 'review') return null
   const pending = nextIntakePending(state)
   if (!pending) return null
   const value = text.trim()
   if (!value || value.length > 100 || value.includes('\n') || (value.includes(':') && !/^\d{1,2}:\d{2}$/.test(value))) return null
-  const label = pending.label
-  const yesNoLabel = ['ASCENSOR', 'EMBALAJE', 'DESARMADO', 'ARMADO', 'DESEMBALAJE']
-  if (yesNoLabel.some((item) => label.startsWith(item)) && /^(s[ií]|no)([.!]| gracias)?$/i.test(value)) return `${label}: ${value}`
-  if (label.startsWith('DISTANCIA') && /^\d+(?:[.,]\d+)?(?:\s*(?:m|metros?))?$/i.test(value)) return `${label}: ${value}`
-  if (label.startsWith('PISO') && /^\d{1,3}$/.test(value)) return `${label}: ${value}`
-  if (label.startsWith('DOCUMENTO') && /^(boleta|factura)$/i.test(value)) return `DOCUMENTO: ${value}`
-  if (['ORIGEN','DESTINO'].includes(label) && /^(casa|departamento|oficina|bodega|otro)$/i.test(value)) return `${label}: ${value}`
-  if (label === 'HORA (HH:MM)' && /^\d{1,2}:\d{2}$/.test(value)) return `HORA: ${value}`
-  if (label === 'FECHA (AAAA-MM-DD)' && /^(?:\d{4}-\d{2}-\d{2}|\d{2}[-/]\d{2}[-/]\d{4})$/.test(value)) return `FECHA: ${value}`
-  if (label === 'CORREO' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return `${label}: ${value}`
-  if (label.startsWith('NÚMERO') && /^\d+[a-zA-Z]?$/.test(value)) return `${label}: ${value}`
-  if (label === 'NOMBRE' && /^[\p{L} .'-]{5,70}$/u.test(value) && /\s/.test(value)
-    && !/\b(hola|gracias|viernes|sabado|domingo|lunes|martes|miercoles|jueves)\b/i.test(value)) return `NOMBRE: ${value}`
-  if (label.startsWith('COMUNA') && /^[\p{L}\s'-]{3,40}$/u.test(value) && value.split(' ').length <= 4) return `${label}: ${value}`
-  if (label.startsWith('REGIÓN') && regionCodes.has(normalizeLabel(value).toLowerCase().replace(/\s+/g, ''))) return `${label}: ${value}`
+  const missing = intakeMissing(state)
+  if (pending.label === 'CONFIRMACIONES') return null
+
+  const uniqueMatch = (regex: RegExp, labels: string[]) => {
+    if (!regex.test(value)) return null
+    const candidates = labels.filter((label) => missing.includes(label))
+    return candidates.length === 1 ? `${candidates[0]}: ${value}` : null
+  }
+  if (/^(boleta|factura)$/i.test(value)) return missing.includes('DOCUMENTO (BOLETA o FACTURA)') ? `DOCUMENTO: ${value}` : null
+  if (/^\d{1,2}:\d{2}$/.test(value)) return missing.includes('HORA (HH:MM)') ? `HORA: ${value}` : null
+  if (/^(?:\d{4}-\d{2}-\d{2}|\d{2}[-/]\d{2}[-/]\d{4})$/.test(value)) return missing.includes('FECHA (AAAA-MM-DD)') ? `FECHA: ${value}` : null
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return missing.includes('CORREO') ? `CORREO: ${value}` : null
+  if (/^\d+(?:[.,]\d+)?(?:\s*(?:m|metros?))?$/i.test(value)) {
+    const meters = /(?:m|metros?)$/i.test(value)
+    const distanceLabels = [
+      'DISTANCIA ENTRADA/ESTACIONAMIENTO ORIGEN (M)', 'DISTANCIA ENTRADA/ESTACIONAMIENTO DESTINO (M)',
+    ]
+    const numericLabels = meters ? distanceLabels : [
+      'PISO ORIGEN SI APLICA', 'PISO DESTINO SI APLICA', ...distanceLabels,
+      'NÚMERO ORIGEN', 'NÚMERO DESTINO',
+    ]
+    return uniqueMatch(/^\d+(?:[.,]\d+)?(?:\s*(?:m|metros?))?$/i, numericLabels)
+  }
+  if (/^(casa|departamento|oficina|bodega|otro)$/i.test(value)) {
+    return uniqueMatch(/^(casa|departamento|oficina|bodega|otro)$/i, ['ORIGEN','DESTINO'])
+  }
+  if (/^(rm|metropolitana|region metropolitana)$/i.test(noAccent(value))) {
+    return uniqueMatch(/^(rm|metropolitana|region metropolitana)$/i, ['REGIÓN ORIGEN','REGIÓN DESTINO'])
+  }
+  if (/^[\p{L}\s'-]{3,40}$/u.test(value) && value.split(' ').length <= 4) {
+    return uniqueMatch(/^[\p{L}\s'-]{3,40}$/u, ['COMUNA ORIGEN','COMUNA DESTINO'])
+  }
+  return null
+}
+
+/** No inventar el lado/campo cuando una respuesta breve tiene dos destinos posibles. */
+export function ambiguousGroupedReply(state: QuoteSessionState, text: string): string | null {
+  if (nextIntakePending(state)?.label !== 'DATOS PENDIENTES') return null
+  const value = noAccent(text.trim()).toLowerCase().replace(/\s+/g, ' ')
+  if (!value || value.length > 45 || /[:\n;,]/.test(value)) return null
+  const missing = intakeMissing(state)
+  const both = (a: string, b: string) => missing.includes(a) && missing.includes(b)
+  if (/^(rm|metropolitana|region metropolitana)$/.test(value)
+      && both('REGIÓN ORIGEN', 'REGIÓN DESTINO')) {
+    return '¿La Región Metropolitana corresponde al origen, al destino o a ambos? Puedes responder: ORIGEN: RM; DESTINO: RM.'
+  }
+  if (/^(casa|departamento|oficina|bodega|otro)$/.test(value)
+      && both('ORIGEN', 'DESTINO')) {
+    return `¿${text.trim()} corresponde al origen, al destino o a ambos? Indica cada lugar en una frase.`
+  }
+  if (/^\d+(?:[.,]\d+)?(?:\s*(?:m|metros?))?$/.test(value)) {
+    const available = [
+      'NÚMERO ORIGEN', 'NÚMERO DESTINO',
+      'PISO ORIGEN SI APLICA', 'PISO DESTINO SI APLICA',
+      'DISTANCIA ENTRADA/ESTACIONAMIENTO ORIGEN (M)',
+      'DISTANCIA ENTRADA/ESTACIONAMIENTO DESTINO (M)',
+    ].filter((label) => missing.includes(label) &&
+      (!/(?:m|metros?)$/.test(value) || label.startsWith('DISTANCIA')))
+    if (available.length > 1) return '¿Ese número indica piso, número de calle o metros desde el camión? ¿Es del origen o del destino? Puedes aclarar ambos en una frase.'
+  }
+  const knownCommunes = new Set(['las condes','providencia','santiago','nunoa','vitacura','la reina','lo barnechea','macul','maipu','penalolen','puente alto','san miguel'])
+  if (knownCommunes.has(value) && both('COMUNA ORIGEN','COMUNA DESTINO')) {
+    return `¿${text.trim()} corresponde a la comuna de origen, de destino o de ambas? Puedes responder: «Origen: ${text.trim()}; Destino: ${text.trim()}».`
+  }
   return null
 }
 

@@ -34,7 +34,7 @@ import { canCloseInventory, isInventoryAddition, upsertInventoryPhoto } from '@/
 import { applyInventoryEdits, parseInventoryEdits, type CatalogInventoryItem } from '@/lib/whatsapp/inventoryEdits'
 import { parseTaxDocumentChoice } from '@/lib/whatsapp/taxDocument'
 import { answerExtras } from '@/lib/whatsapp/extrasFlow'
-import { FREEFORM_START, applyLabelEdits, formatIntakeReview, formatIntakeNextPrompt, inferSinglePendingEdit, isContractClauseReply, intakeCanConfirm, nextIntakePending, markServiceAnswers, INTAKE_SERVICES } from '@/lib/whatsapp/freeformIntake'
+import { FREEFORM_START, applyLabelEdits, formatIntakeReview, formatIntakeNextPrompt, inferSinglePendingEdit, isContractClauseReply, intakeCanConfirm, nextIntakePending, ambiguousGroupedReply, markServiceAnswers, INTAKE_SERVICES } from '@/lib/whatsapp/freeformIntake'
 import { getAvailableSlotsForDate } from '@/lib/scheduleAvailability'
 import { supabaseAdmin } from '@/lib/supabase'
 import { WHATSAPP_WELCOME, botCommand, decideBotAction, isQuoteExpired, isGreeting } from '@/lib/whatsapp/botRouter'
@@ -256,6 +256,11 @@ async function finalizeQuote(session: QuoteSessionRow, conversationId: string, t
 
 /** Muestra el documento de campos interpretados, con nombres copiables para corregir. */
 async function sendFreeformReview(session: QuoteSessionRow, conversationId: string, to: string, intro = '', mode: 'full' | 'next' = 'full') {
+  if (mode === 'next') {
+    const reply = formatIntakeNextPrompt(session.state)
+    await sendAndLog(conversationId, to, intro ? `${intro}\n\n${reply}` : reply)
+    return
+  }
   const ids = session.state.items.map((item) => item.catalogItemId)
   const names = new Map<string, string>()
   if (ids.length) {
@@ -264,9 +269,7 @@ async function sendFreeformReview(session: QuoteSessionRow, conversationId: stri
     for (const row of data || []) names.set(String(row.id), String(row.name))
   }
   const itemNames = session.state.items.map((item) => `${item.quantity} × ${names.get(item.catalogItemId) || 'ARTÍCULO SIN NOMBRE'}`)
-  const summary = mode === 'next' && !intakeCanConfirm(session.state)
-    ? formatIntakeNextPrompt(session.state)
-    : formatIntakeReview(session.state, itemNames)
+  const summary = formatIntakeReview(session.state, itemNames)
   await sendAndLog(conversationId, to, intro ? `${intro}\n\n${summary}` : summary)
 }
 
@@ -377,6 +380,11 @@ async function processFreeformQuoteTurn(
   // La pregunta activa identifica las respuestas cortas sin etiquetas. Los relatos
   // largos y correcciones múltiples siguen pasando por el parser estructurado.
   const focusedEdit = inferSinglePendingEdit(session.state, text)
+  const ambiguity = focusedEdit ? null : ambiguousGroupedReply(session.state, text)
+  if (ambiguity) {
+    await sendAndLog(conversationId, to, ambiguity)
+    return
+  }
   const editingText = focusedEdit || text
 
   // Las variables etiquetadas se aplican determinísticamente (sin adivinar campos).
@@ -403,14 +411,14 @@ async function processFreeformQuoteTurn(
     const availability = await validateFreeformSchedule(newState)
     session = await saveQuoteSession(session.id, newState)
     await logAction({ conversationId, action: 'intake_variables_edited', payload: { changed: labels.changed, messageId: message.id } })
-    await sendFreeformReview(session, conversationId, to, availability || '✓ Corrección registrada.', 'next')
+    await sendFreeformReview(session, conversationId, to, availability, 'next')
     return
   }
 
   // El inventario se puede corregir con QUITAR/AGREGAR, sin afectar otros campos.
   if (parseInventoryEdits(text) !== null && session.state.intake?.stage === 'review') {
     const edit = await editInventory(session.id, text)
-    if (edit.updated) await sendFreeformReview(edit.updated, conversationId, to, '✓ Inventario actualizado.', 'next')
+    if (edit.updated) await sendFreeformReview(edit.updated, conversationId, to, '', 'next')
     else await sendAndLog(conversationId, to, edit.response)
     return
   }
@@ -447,7 +455,7 @@ async function processFreeformQuoteTurn(
     messageId: message.id, summary: patch.normalizedSummary,
     fieldsRecognized: Object.entries(patch).filter(([key, value]) => value !== null && !['normalizedSummary', 'explicitConfirmation'].includes(key)).map(([key]) => key),
   } })
-  await sendFreeformReview(session, conversationId, to, availability || '✓ Datos registrados. Sigamos con lo que falta.', 'next')
+  await sendFreeformReview(session, conversationId, to, availability, 'next')
 }
 
 async function deactivateBot(phone: string, bot: WhatsAppBotState, mode: 'idle' | 'human') {

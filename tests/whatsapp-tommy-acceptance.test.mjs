@@ -46,7 +46,7 @@ test('NO A TODO desmarca exactamente las 6 decisiones sin suponer otros datos', 
   for(const key of ['packing','disassembly','assembly','unpacking']) assert.equal(result.state.additionalServices[key],false)
   assert.deepEqual(result.state.intake.serviceAnswers.sort(),['assembly','disassembly','packing','unpacking'])
   assert.ok(!intakeMissing(result.state).includes('EMBALAJE'))
-  assert.equal(nextIntakePending(result.state).label,'NOMBRE')
+  assert.equal(nextIntakePending(result.state).label,'DATOS PENDIENTES')
 })
 
 test('acepta seis respuestas con etiqueta en un único mensaje, conservando detalles de los muebles', () => {
@@ -58,12 +58,12 @@ test('acepta seis respuestas con etiqueta en un único mensaje, conservando deta
   assert.equal(result.state.additionalServices.disassembly,true)
   assert.equal(result.state.additionalServices.packing,false)
   assert.match(result.state.additionalServices.observations,/sillón y mesa/)
-  assert.equal(nextIntakePending(result.state).label,'NOMBRE')
+  assert.equal(nextIntakePending(result.state).label,'DATOS PENDIENTES')
 })
 
 test('el flujo nuevo envía solo el siguiente pendiente, no ficha inmensa', () => {
   assert.match(FREEFORM_START,/un solo mensaje/)
   const source=readFileSync(new URL('../src/lib/whatsapp/incomingProcessor.ts',import.meta.url),'utf8')
-  assert.match(source,/'✓ Datos registrados\. Sigamos con lo que falta\.', 'next'/)
+  assert.match(source,/sendFreeformReview\(session, conversationId, to, availability, 'next'\)/)
   assert.match(source,/reasonFromCommand\(botCommand\(message\.text\)\)/)
 })

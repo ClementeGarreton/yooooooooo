@@ -116,7 +116,9 @@ Tu tarea es EXTRAER datos del último mensaje del cliente y devolverlos en el sc
 Estamos en ${section === 0 ? 'modo libre: todas las secciones a la vez' : `la sección ${section}/7`}. Fecha actual de referencia: ${new Date().toISOString()}.
 ${section === 4 ? `Pregunta específica que se le hizo al cliente:
 ${sectionQuestion(4, state)}` : ''}
-${focused ? `Después de mostrar la ficha, se preguntó específicamente por «${focused.label}»: ${focused.question}. Si la respuesta es breve y responde inequívocamente a esa pregunta, asígnala SOLO a ese campo, sin afectar otro campo. Si responde varios datos, extrae todos los explícitos.` : ''}
+${focused ? (focused.label === 'DATOS PENDIENTES'
+  ? `Se solicitó un BLOQUE de datos pendientes: ${focused.question}. No se preguntó por un solo campo. Si el cliente responde un dato aislado que puede pertenecer a origen O destino, NO elijas un lado: devuelve null para ambos y no adivines. Si indica origen/destino, extrae todo lo mencionado en una sola respuesta.`
+  : `Se preguntó por «${focused.label}»: ${focused.question}. Si la respuesta breve es inequívoca, asigna ese campo; si responde varios datos, extrae todos los explícitos.`) : ''}
 El cliente está en Chile. Interpreta fechas relativas como "mañana" o "el viernes" en contexto chileno y devuelve YYYY-MM-DD. Hora en HH:mm de 24 horas.
 
 Reglas:
