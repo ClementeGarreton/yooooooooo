@@ -50,18 +50,17 @@ test('No inventa Sí/No en campos no contestados aunque las preguntas mencionen 
   assert.ok(d.undecided.includes('acarreo'))
   assert.ok(d.undecided.includes('embalaje'))
 })
-test('puede responder solamente el recordatorio de pendientes, sin repetir los otros datos', () => {
-  let st=state()
+test('el recordatorio separa preguntas de acceso y admite formularios anteriores', () => {
+  const st=state()
   const base=tommyPendingMessage(st)
-  assert.equal((base.match(/\| Respuesta:/g)||[]).length,3)
-  assert.equal(tommyDifferentialResult(base, st).answers.length,0)
-  const reply=base.replace('Si se requieren escaleras, indica qué muebles; de lo contrario, responde No | Respuesta:', 'Si se requieren escaleras, indica qué muebles; de lo contrario, responde No | Respuesta: no')
-    .replace('(Sí/No) | Respuesta:', '(Sí/No) | Respuesta: no')
-    .replace('Embalaje: ¿qué artículos debemos embalar? (o indica No) | Respuesta:', 'Embalaje: ¿qué artículos debemos embalar? (o indica No) | Respuesta: dos computadores antiguos')
-  const d=tommyDifferentialResult(reply,st)
+  assert.equal((base.match(/4\.[1-4]\)/g)||[]).length,4)
+  assert.match(base,/4\.1\) ¿Hay ascensor/)
+  assert.match(base,/4\.2\) ¿Hay ascensor/)
+  // Compatibilidad retrospectiva con el formulario anterior de tres rótulos.
+  const legacy = '- Escaleras: artículos, pisos y si corresponde a origen, destino o ambos (o indica No) | Respuesta: no\n- Distancia de carga: ¿hay que caminar un tramo largo desde el camión? (Sí/No) | Respuesta: no\n- Embalaje: ¿qué artículos debemos embalar? (o indica No) | Respuesta: dos computadores antiguos'
+  const d=tommyDifferentialResult(legacy,st)
   assert.equal(d.answers.length,3)
-  st=applyTommyAnswers(st,reply)
-  assert.deepEqual(tommyMissing(st),[])
+  assert.deepEqual(tommyMissing(applyTommyAnswers(st,legacy)),[])
 })
 test('respeta respuestas escritas con erratas y número 5 aunque el rótulo esté mal', () => {
  const d=tommyDifferentialResult('5) Distanica de carrga: ¿hay que caminar un tramo largo desde el camión? ; Respuesta: Nop nada')

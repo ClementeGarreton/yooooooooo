@@ -30,6 +30,7 @@ import {
 import { generateQuoteFromSession, calculateSessionQuote } from '@/lib/serverQuoteEngine'
 import { createHandoffRequest, collectHandoffDetails, setPendingHandoffReason } from '@/lib/whatsapp/handoffRequests'
 import { TOMMY_QUOTE_START, TOMMY_FOLLOWUP, TOMMY_EXECUTIVE, tommyMissing, tommyPendingMessage, tommyCaseSummary, applyTommyAnswers, isTommyFormReply, isOnlyTommyServiceAnswers, tommyAnswerOnlyForAI, tommyDifferentialResult } from '@/lib/whatsapp/tommyFlow'
+import { applyAccessForm, isTommyAccessReply } from '@/lib/whatsapp/tommyAccess'
 import { saveQuotePhoto } from '@/lib/whatsapp/photoStorage'
 import { canCloseInventory, isInventoryAddition, upsertInventoryPhoto } from '@/lib/whatsapp/inventoryResolution'
 import { applyInventoryEdits, parseInventoryEdits, type CatalogInventoryItem } from '@/lib/whatsapp/inventoryEdits'
@@ -363,6 +364,22 @@ async function processTommyQuoteTurn(
       ...session.state,
       intake: { ...session.state.intake, tommySubmittedAt: undefined },
     })
+  }
+  // Respuestas 4.1–4.7: cada Sí/No se interpreta por su número,
+  // nunca como una confirmación para varias preguntas a la vez.
+  if (isTommyAccessReply(text)) {
+    nextState = applyAccessForm(nextState, text)
+    // En un mismo copiado pueden venir respuestas a «acarreo» y «embalaje».
+    // Excluir las subpreguntas 4.x para que el parser antiguo no convierta
+    // los «Sí» de ascensor en una respuesta genérica sobre escaleras.
+    const otherAnswers = text.split(/\r?\n/)
+      .filter(line => !/^\s*(?:[-•]\s*)?4\.[1-7]\s*[).:-]/.test(line))
+      .join('\n')
+    nextState = applyTommyAnswers(nextState, otherAnswers)
+    if (nextState.intake) nextState.intake.stage = 'review'
+    session = await saveQuoteSession(session.id, nextState)
+    await finishTommyQuote(session, conversationId, to)
+    return
   }
   // No asignar un número/comuna a origen o destino cuando el cliente no lo especificó.
   const ambiguity = ambiguousGroupedReply(session.state, text)

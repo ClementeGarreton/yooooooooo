@@ -2,12 +2,13 @@ import crypto from 'crypto'
 import { supabaseAdmin } from '@/lib/supabase'
 import { nextPropertyQuestion } from '@/lib/whatsapp/propertyFlow'
 import { extrasQuestion, type ExtrasStep } from '@/lib/whatsapp/extrasFlow'
+import type { TommyAccess } from '@/lib/whatsapp/tommyAccess'
 
 export type PropertyType = 'casa' | 'departamento' | 'oficina' | 'bodega' | 'otro'
 
 export interface QuoteSessionState {
   /** Captura conversacional en JSONB: compatible con sesiones anteriores. */
-  intake?: { stage: 'describe' | 'review'; serviceAnswers: Array<'packing' | 'disassembly' | 'assembly' | 'unpacking'>; tommyVersion?: 1; tommyAnswers?: Array<'escaleras' | 'acarreo' | 'embalaje'>; tommyDetails?: Partial<Record<'escaleras' | 'acarreo' | 'embalaje', string>>; tommySubmittedAt?: string }
+  intake?: { stage: 'describe' | 'review'; serviceAnswers: Array<'packing' | 'disassembly' | 'assembly' | 'unpacking'>; tommyVersion?: 1; tommyAnswers?: Array<'escaleras' | 'acarreo' | 'embalaje'>; tommyDetails?: Partial<Record<'escaleras' | 'acarreo' | 'embalaje', string>>; tommyAccess?: TommyAccess; tommySubmittedAt?: string }
   personalInfo: {
     name: string | null
     email: string | null
