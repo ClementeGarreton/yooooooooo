@@ -108,10 +108,11 @@ type GeneralPatch = {
 }
 
 function generalPrompt(section: number, state: QuoteSessionState) {
-  const focused = section === 0 && state.intake?.stage === 'review' ? nextIntakePending(state) : null
+  const focused = section === 0 && state.intake?.stage === 'review' && state.intake?.tommyVersion !== 1 ? nextIntakePending(state) : null
   return `
 Eres el parser estructurado del cotizador de Yo Me Encargo en WhatsApp.
 Tu tarea es EXTRAER datos del último mensaje del cliente y devolverlos en el schema. No inventes información.
+${state.intake?.tommyVersion === 1 ? 'MODO TOMMY: el cliente responde SEIS grupos: direcciones, artículos, fecha, escaleras, distancia de carga/acarreo y embalaje. Extrae todos los datos que mencione, aunque responda en un bloque numerado. Escaleras no significa necesariamente ausencia de ascensor. Distancia de carga SÍ/NO no equivale a metros medidos. No inventes hora, nombre, correo, tipo de inmueble, ascensor ni distancia.' : ''}
 
 Estamos en ${section === 0 ? 'modo libre: todas las secciones a la vez' : `la sección ${section}/7`}. Fecha actual de referencia: ${new Date().toISOString()}.
 ${section === 4 ? `Pregunta específica que se le hizo al cliente:

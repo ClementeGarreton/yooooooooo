@@ -27,8 +27,9 @@ import {
   pendingInventoryQuestion,
   resolvePendingInventoryChoice,
 } from '@/lib/ai/whatsappQuoteAssistant'
-import { generateQuoteFromSession } from '@/lib/serverQuoteEngine'
+import { generateQuoteFromSession, calculateSessionQuote } from '@/lib/serverQuoteEngine'
 import { createHandoffRequest, collectHandoffDetails, setPendingHandoffReason } from '@/lib/whatsapp/handoffRequests'
+import { TOMMY_QUOTE_START, TOMMY_FOLLOWUP, TOMMY_EXECUTIVE, tommyMissing, tommyPendingMessage, tommyCaseSummary, applyTommyAnswers, isTommyFormReply, isOnlyTommyServiceAnswers } from '@/lib/whatsapp/tommyFlow'
 import { saveQuotePhoto } from '@/lib/whatsapp/photoStorage'
 import { canCloseInventory, isInventoryAddition, upsertInventoryPhoto } from '@/lib/whatsapp/inventoryResolution'
 import { applyInventoryEdits, parseInventoryEdits, type CatalogInventoryItem } from '@/lib/whatsapp/inventoryEdits'
@@ -46,16 +47,15 @@ const HUMAN_REQUEST = /\b(ejecutivo|persona real|humano|asesor|hablar con alguie
 const CONFIRM_QUOTE = /^(confirmar|confirmo|confirmado|s[ií][,!.\s]+generar|generar cotizaci[oó]n|generar pdf)[!.\s]*$/i
 
 function reasonFromCommand(command: ReturnType<typeof botCommand>): string | null {
-  return command === 'RECLAMO' ? 'Reclamo'
-    : command === 'SEGUIMIENTO' ? 'Seguimiento de cotización'
-      : command === 'TRABAJO' ? 'Seguimiento de trabajo' : null
+  return command === 'SEGUIMIENTO' || command === 'TRABAJO' ? 'Seguimiento de servicio'
+    : command === 'RECLAMO' ? 'Reclamo'
+    : command === 'ASESOR' ? 'Ejecutivo' : null
 }
 
 function handoffQuestion(reason: string | null): string {
-  if (reason === 'Reclamo') return 'Cuéntanos qué ocurrió. Si tienes una cotización, incluye su número.'
-  if (reason === 'Seguimiento de cotización') return '¿Qué necesitas saber de tu cotización? Incluye el número si lo tienes.'
-  if (reason === 'Seguimiento de trabajo') return '¿Qué necesitas saber del trabajo en curso? Indica el servicio o número de cotización.'
-  return '¿Qué necesitas? Puedes describir tu caso o responder RECLAMO, SEGUIMIENTO o TRABAJO.'
+  if (reason === 'Seguimiento de servicio') return TOMMY_FOLLOWUP
+  if (reason === 'Reclamo' || reason === 'Ejecutivo') return TOMMY_EXECUTIVE
+  return TOMMY_EXECUTIVE
 }
 
 
@@ -257,7 +257,9 @@ async function finalizeQuote(session: QuoteSessionRow, conversationId: string, t
 /** Muestra el documento de campos interpretados, con nombres copiables para corregir. */
 async function sendFreeformReview(session: QuoteSessionRow, conversationId: string, to: string, intro = '', mode: 'full' | 'next' = 'full') {
   if (mode === 'next') {
-    const reply = formatIntakeNextPrompt(session.state)
+    const reply = session.state.intake?.tommyVersion === 1
+      ? (tommyPendingMessage(session.state) || 'Tu solicitud ya está registrada para revisión. 🚚')
+      : formatIntakeNextPrompt(session.state)
     await sendAndLog(conversationId, to, intro ? `${intro}\n\n${reply}` : reply)
     return
   }
@@ -289,6 +291,133 @@ async function validateFreeformSchedule(state: QuoteSessionRow['state']): Promis
     console.warn('[WhatsApp][ficha] No fue posible consultar disponibilidad:', error)
   }
   return ''
+}
+
+/** Con seis grupos completos se crea un expediente, NO un PDF final inventando nombre/correo/hora. */
+async function finishTommyQuote(session: QuoteSessionRow, conversationId: string, to: string) {
+  const missing = tommyMissing(session.state)
+  if (missing.length) {
+    await sendAndLog(conversationId, to, tommyPendingMessage(session.state)!)
+    return
+  }
+  if (session.state.intake?.tommySubmittedAt) {
+    await sendAndLog(conversationId, to, 'Tu solicitud ya quedó registrada. Si necesitas corregir algo, escríbelo aquí o responde *MENÚ*.')
+    return
+  }
+  let estimate: number | null = null
+  try {
+    // Usa exactamente la misma tarifa vigente que el cotizador web.
+    // No se promete valor definitivo cuando faltan datos internos de acceso o distancia.
+    const result = await calculateSessionQuote(session.state)
+    if (Number.isFinite(result.estimatedPrice) && result.estimatedPrice > 0) estimate = result.estimatedPrice
+  } catch (error) {
+    console.warn('[WhatsApp][Tommy] No se pudo precalcular; deriva para revisión', error)
+  }
+  const stamped = {
+    ...session.state,
+    intake: { ...session.state.intake!, tommySubmittedAt: new Date().toISOString() },
+  }
+  // Registrar primero en la bandeja de secretaría. Si el registro falla,
+  // la sesión sigue pendiente y podrá reintentarse sin pérdida de datos.
+  await createHandoffRequest({
+    phone: normalizePhone(to), session,
+    reason: 'Cotización pendiente de revisión humana',
+    details: tommyCaseSummary(session.state, estimate),
+    status: 'ready', estimatedPrice: estimate,
+  })
+  session = await saveQuoteSession(session.id, stamped, estimate !== null ? { estimated_price: estimate } : {})
+  await logAction({ conversationId, action: 'tommy_six_groups_completed', payload: { sessionId: session.id, estimatedPrice: estimate } })
+  await updateConversation(conversationId, { status: 'handoff' })
+  await setBotMode(normalizePhone(to), 'idle')
+  await sendAndLog(conversationId, to, '¡Gracias! 🙌 Recibimos tus seis datos. Prepararemos tu presupuesto estimativo, sujeto a revisión humana, y te contactaremos a la brevedad 🚚')
+}
+
+/** Mensaje libre con los seis grupos de Tommy: parsear todo a la vez, no pedir 17 campos. */
+async function processTommyQuoteTurn(
+  session: QuoteSessionRow,
+  conversationId: string,
+  to: string,
+  message: ReturnType<typeof extractMessages>[number],
+) {
+  const text = message.text.trim()
+  if (message.type === 'image') {
+    // Reutilizar análisis fotográfico existente; su respuesta ahora usa los seis grupos.
+    await processFreeformQuoteTurn(session, conversationId, to, message)
+    return
+  }
+  if (!text || /^hola[!.\s]*$/i.test(text)) {
+    await sendAndLog(conversationId, to, tommyPendingMessage(session.state) || TOMMY_QUOTE_START)
+    return
+  }
+  if (/^(ficha|resumen|ver ficha)[.!\s]*$/i.test(text)) {
+    await sendFreeformReview(session, conversationId, to)
+    return
+  }
+  if (/^(confirmar|confirmo)[.!\s]*$/i.test(text)) {
+    await finishTommyQuote(session, conversationId, to)
+    return
+  }
+  if (session.state.intake?.tommySubmittedAt) {
+    // Una nueva corrección no debe sobrescribir el expediente sin auditabilidad.
+    session = await saveQuoteSession(session.id, {
+      ...session.state,
+      intake: { ...session.state.intake, tommySubmittedAt: undefined },
+    })
+  }
+  // No asignar un número/comuna a origen o destino cuando el cliente no lo especificó.
+  const ambiguity = ambiguousGroupedReply(session.state, text)
+  if (ambiguity) { await sendAndLog(conversationId, to, ambiguity); return }
+  let nextState = session.state
+  if (isOnlyTommyServiceAnswers(text)) {
+    nextState = applyTommyAnswers(nextState, text)
+    if (nextState.intake) nextState.intake.stage = 'review'
+    session = await saveQuoteSession(session.id, nextState)
+    await finishTommyQuote(session, conversationId, to)
+    return
+  }
+  // Las etiquetas individuales siguen admitiendo correcciones cuando corresponden.
+  const labels = isTommyFormReply(text)
+    ? { recognized: false, errors: [] as string[], state: nextState, inventory: null }
+    : applyLabelEdits(nextState, text)
+  if (labels.recognized && !labels.errors.length && !isContractClauseReply(text)) {
+    nextState = labels.state
+    if (labels.inventory) {
+      const inventory = await parseWhatsAppInventory(labels.inventory.description)
+      await addUsage(conversationId, inventory.usage)
+      if (inventory.statePatch.items.length && !inventory.statePatch.pendingInventory.length) {
+        nextState = labels.inventory.mode === 'replace'
+          ? { ...nextState, items: inventory.statePatch.items, pendingInventory: [], inventoryCollectionDone: true }
+          : mergeInventory(nextState, inventory.statePatch)
+      } else {
+        await sendAndLog(conversationId, to, 'No pude identificar todos los artículos. Escribe la lista con cantidades.')
+        return
+      }
+    }
+  } else {
+    if (labels.errors.length) {
+      await sendAndLog(conversationId, to, `Revisa estos datos: ${labels.errors.join('; ')}`)
+      return
+    }
+    const parsed = await parseGeneralWhatsAppTurn(0, nextState, text)
+    await addUsage(conversationId, parsed.usage)
+    nextState = parsed.state
+    const patch = parsed.patch
+    nextState = markServiceAnswers(nextState, INTAKE_SERVICES.filter(key => patch[key] !== null))
+    if (patch.inventoryDescription?.trim()) {
+      const inventory = await parseWhatsAppInventory(patch.inventoryDescription)
+      await addUsage(conversationId, inventory.usage)
+      if (inventory.statePatch.items.length || inventory.statePatch.pendingInventory.length) {
+        nextState = mergeInventory(nextState, inventory.statePatch)
+        nextState.inventoryCollectionDone = true
+      }
+    }
+  }
+  nextState = applyTommyAnswers(nextState, text)
+  if (nextState.intake) nextState.intake.stage = 'review'
+  nextState.confirmed = false
+  session = await saveQuoteSession(session.id, nextState)
+  await logAction({ conversationId, action: 'tommy_six_groups_updated', payload: { messageId: message.id, missing: tommyMissing(session.state) } })
+  await finishTommyQuote(session, conversationId, to)
 }
 
 /** El cliente puede responder en un párrafo, un bloque de variables o una fotografía. */
@@ -535,6 +664,15 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
     let session = decision === 'start_new_quote'
       ? await createWhatsAppSession(phone, customerPhone(to))
       : await getOrCreateWhatsAppSession(phone)
+    // Después de enviar un expediente a secretaría, "1 / Cotizar" inicia otro;
+    // RETOMAR conserva explícitamente el expediente anterior hasta entonces.
+    if (botCommand(message.text) === 'COTIZAR' && session.state.intake?.tommySubmittedAt) {
+      const { error: archiveError } = await supabaseAdmin.from('quote_sessions')
+        .update({ status: 'handoff', updated_at: new Date().toISOString() })
+        .eq('id', session.id).in('status', ['collecting', 'ready'])
+      if (archiveError) throw new Error(archiveError.message)
+      session = await createWhatsAppSession(phone, customerPhone(to))
+    }
     if (messageContext.getStore()?.platform === 'instagram' && session.state.intake) {
       session = await saveQuoteSession(session.id, { ...session.state, intake: undefined })
     }
@@ -543,7 +681,12 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
     const conversationId = conversation.id as string
     await moveIncomingToConversation(message.id, conversationId)
     const resumed = Date.now() - Date.parse(session.created_at) > 10_000
-    if (resumed && session.state.intake?.stage === 'review') {
+    if (session.state.intake?.tommyVersion === 1) {
+      const message = resumed
+        ? (tommyPendingMessage(session.state) || 'Tu solicitud ya quedó registrada. Puedes enviar alguna corrección o escribir *MENÚ*.')
+        : TOMMY_QUOTE_START
+      await sendAndLog(conversationId, to, message)
+    } else if (resumed && session.state.intake?.stage === 'review') {
       await sendFreeformReview(session, conversationId, to, 'Retomamos tu cotización donde quedó.', 'next')
     } else {
       await sendAndLog(conversationId, to, resumed
@@ -576,7 +719,7 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
     await deactivateBot(phone, bot, decision === 'human' ? 'human' : 'idle')
     if (decision === 'human') {
       await createHandoffRequest({ phone, session, reason })
-      await sendWhatsAppText(to, `Tu teléfono de WhatsApp ya quedó registrado. ${handoffQuestion(reason)}`)
+      await sendWhatsAppText(to, handoffQuestion(reason))
     } else {
       await sendWhatsAppText(to, 'Atención terminada. Para volver, escribe *COTIZAR* o *ASESOR*.')
     }
@@ -591,8 +734,9 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
   }
 
   if (decision === 'silent') {
-    if (bot.mode === 'human' && await collectHandoffDetails(phone, message.text)) {
-      await sendWhatsAppText(to, 'Gracias. Ya registramos el motivo y los antecedentes para que nuestro equipo te atienda.')
+    if (bot.mode === 'human') {
+      const result = await collectHandoffDetails(phone, message.text)
+      if (result.received) await sendWhatsAppText(to, result.reply)
     }
     if (bot.mode === 'idle') await touchIdleActivity(phone)
     return
@@ -652,6 +796,10 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
 
   // Nuevo flujo: declaración libre -> ficha editable -> confirmación explícita.
   // Sesiones antiguas sin state.intake siguen el flujo previo para no romperlas.
+  if (state.intake?.tommyVersion === 1) {
+    await processTommyQuoteTurn(session, conversationId, to, message)
+    return
+  }
   if (state.intake) {
     await processFreeformQuoteTurn(session, conversationId, to, message)
     return

@@ -2,6 +2,7 @@
  * Solo modifica el JSONB ya existente; no altera el motor de precios.
  */
 import type { QuoteSessionState, PropertyType } from '../quoteSession'
+import { tommyPendingMessage } from './tommyFlow.ts'
 
 export type IntakeService = 'packing' | 'disassembly' | 'assembly' | 'unpacking'
 export const INTAKE_SERVICES: IntakeService[] = ['packing', 'disassembly', 'assembly', 'unpacking']
@@ -351,6 +352,7 @@ export function nextIntakePending(state: QuoteSessionState): { label: string; qu
 }
 
 export function formatIntakeNextPrompt(state: QuoteSessionState): string {
+  if (state.intake?.tommyVersion === 1) return tommyPendingMessage(state) || '¡Gracias! Tu solicitud ya quedó registrada para revisión. 🚚'
   const pending = nextIntakePending(state)
   if (!pending) return '✅ *Datos completos.* Escribe *FICHA* para revisar el detalle o *CONFIRMAR* para generar la cotización estimativa.'
   return pending.question

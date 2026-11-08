@@ -31,16 +31,8 @@ export type BotDecision =
   | 'expire_silent'
   | 'silent'
 
-export const WHATSAPP_WELCOME = [
-  '¡Bienvenido a *Yo Me Encargo*! 👋',
-  '',
-  '¿Qué necesitas?',
-  '*COTIZAR* — Cotizar una mudanza (o retomarla).',
-  '*RECLAMO* — Presentar un reclamo.',
-  '*SEGUIMIENTO* — Consultar una cotización.',
-  '*TRABAJO* — Consultar un servicio en curso.',
-  '*ASESOR* — Otras consultas con nuestro equipo.',
-].join('\n')
+import { TOMMY_WELCOME } from './tommyFlow.ts'
+export const WHATSAPP_WELCOME = TOMMY_WELCOME
 
 /** Un saludo explícito en modo idle debe recibir respuesta, aunque existan
  * mensajes anteriores: nunca prolongar un silencio indefinidamente con 'hola'. */
@@ -51,12 +43,12 @@ export function isGreeting(text: string): boolean {
 export function botCommand(text: string): BotCommand {
   // Solo la palabra aislada; "quiero cotizar" NO inicia OpenAI.
   const value = text.trim().toLocaleUpperCase('es')
-  if (value === 'COTIZAR') return 'COTIZAR'
+  if (value === 'COTIZAR' || value === '1' || value === '1)') return 'COTIZAR'
   if (/^(RETOMAR|CONTINUAR|QUIERO RETOMAR(?: LA CONVERSACI[OÓ]N)?|SEGUIR COTIZANDO)$/.test(value)) return 'RETOMAR'
   if (/^(NUEVA|NUEVA COTIZACI[OÓ]N|EMPEZAR DE CERO)$/.test(value)) return 'NUEVA'
-  if (value === 'ASESOR' || value === 'EJECUTIVO') return 'ASESOR'
+  if (value === 'ASESOR' || value === 'EJECUTIVO' || value === '3' || value === '3)' || value.startsWith('PROVEEDORES,') || value === 'SOLICITUDES ESPECIALES') return 'ASESOR'
   if (value === 'RECLAMO' || value === 'QUEJA') return 'RECLAMO'
-  if (/^(SEGUIMIENTO|SEGUIMIENTO DE COTIZACI[OÓ]N|ESTADO DE COTIZACI[OÓ]N)$/.test(value)) return 'SEGUIMIENTO'
+  if (/^(2|2[)]|SEGUIMIENTO|SEGUIMIENTO DE UN SERVICIO|SEGUIMIENTO DE SERVICIO|SEGUIMIENTO DE COTIZACI[OÓ]N|ESTADO DE COTIZACI[OÓ]N)$/.test(value)) return 'SEGUIMIENTO'
   if (/^(TRABAJO|TRABAJO EN CURSO|SERVICIO EN CURSO)$/.test(value)) return 'TRABAJO'
   if (value === 'MENU' || value === 'MENÚ') return 'MENU'
   if (value === 'SALIR') return 'SALIR'

@@ -17,9 +17,9 @@ function empty() {
   }
 }
 
-test('menú visible ofrece motivos directos sin pasar por ASESOR', () => {
-  for(const option of ['COTIZAR','RECLAMO','SEGUIMIENTO','TRABAJO','ASESOR']) assert.match(WHATSAPP_WELCOME,new RegExp(option))
-  for(const [input,cmd] of [['reclamo','RECLAMO'],['Seguimiento de cotización','SEGUIMIENTO'],['trabajo en curso','TRABAJO']]) {
+test('el menú definitivo de Tommy tiene tres opciones numeradas', () => {
+  for(const option of ['1) Cotizar','2) Seguimiento de un servicio','3) Proveedores, solicitudes especiales o hablar con un ejecutivo']) assert.ok(WHATSAPP_WELCOME.includes(option))
+  for(const [input,cmd] of [['reclamo','RECLAMO'],['Seguimiento de cotización','SEGUIMIENTO'],['trabajo en curso','TRABAJO'],['2','SEGUIMIENTO'],['3','ASESOR']]) {
     assert.equal(botCommand(input),cmd)
     assert.equal(decideBotAction(input,{greeted_at:'2026-11-07',mode:'idle',last_activity_at:'2026-11-07'},Date.now()),'human')
   }
