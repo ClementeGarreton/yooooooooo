@@ -125,6 +125,9 @@ El cliente está en Chile. Interpreta fechas relativas como "mañana" o "el vier
 Reglas:
 - Si el cliente indica teléfono de contacto, extrae sólo números y prefijo, sin inventar.
 - Si un dato no aparece claramente en el mensaje actual, devuelve null. No repitas datos del estado sólo por existir.
+- Si recibes «Direcciones origen y destino: ...», «Artículos para trasladar: ...» o «Fecha del flete: ...» en el contexto de formulario copiado, procesa SOLO el valor a la derecha de los dos puntos. Es un contenido ya extraído, no una pregunta.
+- NO conviertas palabras del formulario original en respuestas. Si faltan valores o los dos domicilios son indistinguibles, devuelve null en vez de completar por contexto.
+
 - Para direcciones separa calle, número y comuna. region debe usar uno de los códigos admitidos por el formulario (metropolitana, valparaiso, biobio, etc.). Puedes inferir la región cuando la comuna o ciudad la haga inequívoca; por ejemplo Providencia/Las Condes/Ñuñoa/Santiago => metropolitana. Si no puedes determinarla con confianza, null.
 - propertyType sólo puede ser casa, departamento, oficina, bodega u otro.
 - "sin ascensor", "por escalera" => hasElevator=false. "con ascensor" => true.

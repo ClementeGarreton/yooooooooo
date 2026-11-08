@@ -63,6 +63,18 @@ function segmentMessage(message: string): { segments: Segment[]; loose: string[]
   return { segments, loose }
 }
 
+/**
+ * Respuesta delimitada explícitamente por el cliente al copiar la pregunta.
+ * El rótulo existe también en el formulario ORIGINAL: nunca es una respuesta.
+ * Acepta | Respuesta:, ; Respuesta: y una línea Respuesta: bajo la pregunta.
+ * No depende de la semejanza de embeddings, puntuación libre ni vocabularios
+ * particulares de muebles: asigna la respuesta según el número/etiqueta.
+ */
+function markedAnswer(body: string): string | null {
+  const match = /(?:^|[|;]|\n)\s*(?:respuesta|rpta|rta)\s*:\s*(.*)$/i.exec(body)
+  return match ? match[1].trim() : null
+}
+
 /** distancia de Levenshtein limitada a pequeñas erratas en una palabra del guion. */
 function typo(a: string, b: string): boolean {
   if (a === b || a.length < 5 || b.length < 5 || Math.abs(a.length - b.length) > 2) return false
@@ -184,9 +196,30 @@ export function extractTommyDifferential(message: string, references: string[]):
       undecided.add(part.field)
       continue
     }
+    // El ancla explícita tiene prioridad sobre un diff por similitud textual.
+    // Si está vacía, NO atribuir «Sí/No» que aparezca en la pregunta.
+    const explicit = markedAnswer(part.body)
+    if (explicit !== null && explicit.length) {
+      if (conflicted.has(part.field)) continue
+      const prior = response.get(part.field)
+      if (prior && simple(prior.value) !== simple(explicit)) {
+        response.delete(part.field)
+        undecided.add(part.field)
+        conflicted.add(part.field)
+        continue
+      }
+      response.set(part.field, { field: part.field, value: explicit, method: 'direct' })
+      undecided.delete(part.field)
+      continue
+    }
     let proposed: { text: string; overlap: number } | null = null
     for (const ref of refs) {
-      const item = extractInsertions(ref, part.body)
+      // El cliente puede contestar usando un formulario antiguo sin «Respuesta:».
+      // No dejar que el nuevo marcador cambie cómo comparamos ese formato.
+      const comparableReference = explicit === null
+        ? ref.replace(/\s*\|\s*respuesta\s*:\s*$/i, '')
+        : ref
+      const item = extractInsertions(comparableReference, part.body)
       if (!proposed || item.overlap > proposed.overlap) proposed = item
     }
     // Sin referencia para comparar: solo aceptar un valor claramente independiente,

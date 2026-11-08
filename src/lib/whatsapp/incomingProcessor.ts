@@ -411,18 +411,39 @@ async function processTommyQuoteTurn(
       await sendAndLog(conversationId, to, `Revisa estos datos: ${labels.errors.join('; ')}`)
       return
     }
-    const parsed = await parseGeneralWhatsAppTurn(0, nextState, onlyChanges || text)
-    await addUsage(conversationId, parsed.usage)
-    nextState = parsed.state
-    const patch = parsed.patch
-    nextState = markServiceAnswers(nextState, INTAKE_SERVICES.filter(key => patch[key] !== null))
-    if (patch.inventoryDescription?.trim()) {
-      const inventory = await parseWhatsAppInventory(patch.inventoryDescription)
-      await addUsage(conversationId, inventory.usage)
-      if (inventory.statePatch.items.length || inventory.statePatch.pendingInventory.length) {
-        nextState = mergeInventory(nextState, inventory.statePatch)
-        nextState.inventoryCollectionDone = true
+    try {
+      const parsed = await parseGeneralWhatsAppTurn(0, nextState, onlyChanges || text)
+      await addUsage(conversationId, parsed.usage)
+      nextState = parsed.state
+      const patch = parsed.patch
+      nextState = markServiceAnswers(nextState, INTAKE_SERVICES.filter(key => patch[key] !== null))
+      if (patch.inventoryDescription?.trim()) {
+        const inventory = await parseWhatsAppInventory(patch.inventoryDescription)
+        await addUsage(conversationId, inventory.usage)
+        if (inventory.statePatch.items.length || inventory.statePatch.pendingInventory.length) {
+          nextState = mergeInventory(nextState, inventory.statePatch)
+          nextState.inventoryCollectionDone = true
+        }
       }
+    } catch (error) {
+      // Un fallo de OpenAI, del inventario o de su esquema no significa que
+      // el cliente haya contestado mal. NO pedir el mismo formulario en bucle.
+      // Guardar los Sí/No verificables y derivar el mensaje original a secretaría
+      // para que ninguna información se pierda si falla el análisis automático.
+      console.error('[WhatsApp][Tommy] Falló el análisis de respuestas; se deriva sin repetir preguntas:', error)
+      const recovered = applyTommyAnswers(nextState, text)
+      if (recovered.intake) recovered.intake.stage = 'review'
+      session = await saveQuoteSession(session.id, recovered)
+      await createHandoffRequest({
+        phone: normalizePhone(to), session,
+        reason: 'Revisión manual: interpretación automática no disponible',
+        details: `Mensaje original del cliente (no reinterpretado):\n${text.slice(0, 4500)}`,
+        status: 'ready',
+      })
+      await updateConversation(conversationId, { status: 'handoff' })
+      await setBotMode(normalizePhone(to), 'idle')
+      await sendAndLog(conversationId, to, 'Recibimos tus respuestas. No necesitas repetirlas: dejamos tu mensaje para revisión de nuestro equipo. 🙌')
+      return
     }
   }
   nextState = applyTommyAnswers(nextState, text)

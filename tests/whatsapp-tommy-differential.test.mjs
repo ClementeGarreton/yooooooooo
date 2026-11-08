@@ -67,7 +67,7 @@ test('mensaje de pendientes editado cancela solamente las preguntas contestadas'
 })
 test('títulos con erratas siguen alineándose por número sin inventar un Sí',()=>{
   const reply=form.replace('4) Escaleras: indícanos', '4) Ecaleeras: indicanos')
-    .replace('No.\n5)', 'No. no no hay\n5)')
+    .replace('responde No.', 'responde No. no no hay')
     .replace('6) Embalaje:', '6) Enbalaje:')
     .replace('Si es así, indícanos qué artículos.', 'Si es así, indícanos qué artículos. no')
   const d=tommyDifferentialResult(reply)

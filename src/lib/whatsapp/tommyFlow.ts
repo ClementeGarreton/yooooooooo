@@ -20,14 +20,14 @@ export const TOMMY_WELCOME = [
 export const TOMMY_QUOTE_START = [
   '¡Hola! 👋 Para cotizar tu flete o mudanza, por favor envíanos esta información:',
   '',
-  '1) Direcciones de origen y destino: calle, número, comuna y número de departamento si corresponde.',
-  '2) Lista de artículos a trasladar.',
-  '3) Fecha del flete o mudanza.',
-  '4) Escaleras: indícanos qué artículos hay que subir o bajar por escalera, cuántos pisos y si es en el origen, el destino o ambos. Si no hay, responde No.',
-  '5) Distancia de carga: ¿hay que caminar un tramo largo desde el camión hasta el lugar de carga o descarga? (Sí / No)',
-  '6) Embalaje: ¿necesitas que embalemos algo? Si es así, indícanos qué artículos.',
+  '1) Direcciones de origen y destino: calle, número, comuna y número de departamento si corresponde. | Respuesta:',
+  '2) Lista de artículos a trasladar. | Respuesta:',
+  '3) Fecha del flete o mudanza. | Respuesta:',
+  '4) Escaleras: indícanos qué artículos hay que subir o bajar por escalera, cuántos pisos y si es en el origen, el destino o ambos. Si no hay, responde No. | Respuesta:',
+  '5) Distancia de carga: ¿hay que caminar un tramo largo desde el camión hasta el lugar de carga o descarga? (Sí / No) | Respuesta:',
+  '6) Embalaje: ¿necesitas que embalemos algo? Si es así, indícanos qué artículos. | Respuesta:',
   '',
-  'Copia este mensaje y cámbiale las respuestas para contestar más fácil y rápido.',
+  'Copia este mensaje y escribe tu respuesta después de «Respuesta:» en cada punto. Si no corresponde, escribe «No».',
   '¡Gracias! Con esto te enviamos tu cotización a la brevedad 🚚',
 ].join('\n')
 
@@ -79,9 +79,9 @@ export function tommyPendingMessage(state: QuoteSessionState): string | null {
   return [
     '¡Gracias por la información! 🙌 Para enviarte el presupuesto solo nos falta:',
     '',
-    ...missing.map(name => `- ${labels[name]}`),
+    ...missing.map(name => `- ${labels[name]} | Respuesta:`),
     '',
-    'Copia este mensaje y cambia las respuestas para responder más fácil y rápido.',
+    'Copia este mensaje y completa «Respuesta:» en cada pendiente.',
     'Apenas nos respondas, te enviamos tu cotización 🚚',
   ].join('\n')
 }
