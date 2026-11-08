@@ -6,6 +6,7 @@ export async function createHandoffRequest(input: {
   phone: string
   channel?: string
   session?: QuoteSessionRow | null
+  reason?: string | null
 }) {
   const state = input.session?.state
   const { error } = await supabaseAdmin.from('handoff_requests').insert({
@@ -16,6 +17,7 @@ export async function createHandoffRequest(input: {
     customer_name: state?.personalInfo.name || null,
     customer_email: state?.personalInfo.email || null,
     quote_snapshot: state || {},
+    reason: input.reason || null,
     status: 'pending',
   })
   if (error) throw new Error(`No se pudo registrar derivación: ${error.message}`)
@@ -25,7 +27,7 @@ export async function createHandoffRequest(input: {
 export async function collectHandoffDetails(phone: string, text: string) {
   if (!text.trim()) return false
   const { data, error } = await supabaseAdmin.from('handoff_requests')
-    .select('id').eq('phone', phone).eq('status', 'pending')
+    .select('id,reason').eq('phone', phone).eq('status', 'pending')
     .order('created_at', { ascending: false }).limit(1).maybeSingle()
   if (error) throw new Error(`No se pudo consultar la derivación: ${error.message}`)
   if (!data) return false
@@ -37,7 +39,7 @@ export async function collectHandoffDetails(phone: string, text: string) {
     : 'Otra consulta'
   const reference = text.match(/\bCOT[-\s]?\d{3,}\b/i)?.[0] || null
   const changes: Record<string, unknown> = {
-    reason, details: text.trim().slice(0, 3000), status: 'ready', updated_at: new Date().toISOString(),
+    reason: data.reason || reason, details: text.trim().slice(0, 3000), status: 'ready', updated_at: new Date().toISOString(),
   }
   // No sobrescribir la referencia de cotización existente si el cliente no repite su número.
   if (reference) changes.quote_id = reference
@@ -45,5 +47,18 @@ export async function collectHandoffDetails(phone: string, text: string) {
     .update(changes)
     .eq('id', data.id).eq('status', 'pending')
   if (updateError) throw new Error(`No se pudo guardar motivo: ${updateError.message}`)
+  return true
+}
+
+/** Elegir un motivo no equivale a entregar los antecedentes del caso. */
+export async function setPendingHandoffReason(phone: string, reason: string) {
+  const { data, error } = await supabaseAdmin.from('handoff_requests')
+    .select('id').eq('phone', phone).eq('status', 'pending')
+    .order('created_at', { ascending: false }).limit(1).maybeSingle()
+  if (error) throw new Error(`No se pudo consultar la derivación: ${error.message}`)
+  if (!data) return false
+  const { error: saveError } = await supabaseAdmin.from('handoff_requests')
+    .update({ reason, updated_at: new Date().toISOString() }).eq('id', data.id)
+  if (saveError) throw new Error(`No se pudo guardar motivo: ${saveError.message}`)
   return true
 }

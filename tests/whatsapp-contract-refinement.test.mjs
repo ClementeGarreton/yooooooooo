@@ -21,17 +21,18 @@ const make = () => {
 }
 
 test('presenta orientación natural y servicios agrupados sin mensajes extensos', () => {
-  assert.match(FREEFORM_START, /Cuéntame en un mensaje/)
-  assert.match(FREEFORM_START, /EMBALAJE, DESARMADO, ARMADO, DESEMBALAJE/)
-  assert.match(FREEFORM_START, /libremente/)
+  assert.match(FREEFORM_START, /Cuéntame en un solo mensaje/)
+  assert.match(FREEFORM_START, /servicios adicionales/)
+  assert.match(FREEFORM_START, /ficha con variables/)
   assert.ok(FREEFORM_START.length < 700)
 })
 
-test('el primer pendiente corresponde a un único campo y da una pregunta acotada', () => {
+test('las seis preguntas binarias quedan agrupadas antes del resto de datos', () => {
   const state = make()
   const pending = nextIntakePending(state)
-  assert.equal(pending.label, 'NOMBRE')
-  assert.match(formatIntakeNextPrompt(state), /Pendiente: NOMBRE/)
+  assert.equal(pending.label, 'CONFIRMACIONES')
+  assert.match(formatIntakeNextPrompt(state), /ASCENSOR ORIGEN: SÍ\/NO/)
+  assert.match(formatIntakeNextPrompt(state), /DESEMBALAJE: SÍ\/NO/)
   assert.doesNotMatch(formatIntakeNextPrompt(state), /FICHA INTERPRETADA/)
 })
 
@@ -45,6 +46,9 @@ test('respuesta breve al piso pendiente se interpreta determinísticamente, sin 
   Object.assign(state.origin.address, { street: 'Calle 1', number: '13', commune: 'Las Condes', region: 'metropolitana' })
   Object.assign(state.destination.address, { street: 'Calle 2', number: '22', commune: 'Las Condes', region: 'metropolitana' })
   state.origin.details.propertyType = 'departamento'
+  state.origin.details.hasElevator = false
+  state.destination.details.hasElevator = false
+  state.intake.serviceAnswers = ['packing','disassembly','assembly','unpacking']
   const edit = inferSinglePendingEdit(state, '5')
   assert.equal(edit, 'PISO ORIGEN SI APLICA: 5')
   const result = applyLabelEdits(state, edit)
@@ -60,9 +64,10 @@ test('respuesta sí/no al ascensor se procesa sólo para el lado correspondiente
   Object.assign(state.origin.address, { street: 'Calle 1', number: '13', commune: 'Las Condes', region: 'metropolitana' })
   Object.assign(state.destination.address, { street: 'Calle 2', number: '22', commune: 'Las Condes', region: 'metropolitana' })
   Object.assign(state.origin.details, { propertyType: 'departamento', floor: 5 })
+  // Durante el bloque agrupado 'sí' solo sería ambiguo: usar etiqueta.
   const edit = inferSinglePendingEdit(state, 'sí')
-  assert.equal(edit, 'ASCENSOR ORIGEN: sí')
-  const next = applyLabelEdits(state, edit)
+  assert.equal(edit, null)
+  const next = applyLabelEdits(state, 'ASCENSOR ORIGEN: sí')
   assert.equal(next.state.origin.details.hasElevator, true)
   assert.equal(next.state.destination.details.hasElevator, null)
 })

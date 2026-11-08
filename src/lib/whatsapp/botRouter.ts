@@ -19,7 +19,7 @@ export interface WhatsAppBotState {
   updated_at: string
 }
 
-export type BotCommand = 'COTIZAR' | 'RETOMAR' | 'NUEVA' | 'ASESOR' | 'MENU' | 'SALIR' | null
+export type BotCommand = 'COTIZAR' | 'RETOMAR' | 'NUEVA' | 'ASESOR' | 'RECLAMO' | 'SEGUIMIENTO' | 'TRABAJO' | 'MENU' | 'SALIR' | null
 export type BotDecision =
   | 'start_quote'
   | 'start_new_quote'
@@ -36,7 +36,10 @@ export const WHATSAPP_WELCOME = [
   '',
   '¿Qué necesitas?',
   '*COTIZAR* — Cotizar una mudanza (o retomarla).',
-  '*ASESOR* — Hablar con nuestro equipo.',
+  '*RECLAMO* — Presentar un reclamo.',
+  '*SEGUIMIENTO* — Consultar una cotización.',
+  '*TRABAJO* — Consultar un servicio en curso.',
+  '*ASESOR* — Otras consultas con nuestro equipo.',
 ].join('\n')
 
 /** Un saludo explícito en modo idle debe recibir respuesta, aunque existan
@@ -52,6 +55,9 @@ export function botCommand(text: string): BotCommand {
   if (/^(RETOMAR|CONTINUAR|QUIERO RETOMAR(?: LA CONVERSACI[OÓ]N)?|SEGUIR COTIZANDO)$/.test(value)) return 'RETOMAR'
   if (/^(NUEVA|NUEVA COTIZACI[OÓ]N|EMPEZAR DE CERO)$/.test(value)) return 'NUEVA'
   if (value === 'ASESOR' || value === 'EJECUTIVO') return 'ASESOR'
+  if (value === 'RECLAMO' || value === 'QUEJA') return 'RECLAMO'
+  if (/^(SEGUIMIENTO|SEGUIMIENTO DE COTIZACI[OÓ]N|ESTADO DE COTIZACI[OÓ]N)$/.test(value)) return 'SEGUIMIENTO'
+  if (/^(TRABAJO|TRABAJO EN CURSO|SERVICIO EN CURSO)$/.test(value)) return 'TRABAJO'
   if (value === 'MENU' || value === 'MENÚ') return 'MENU'
   if (value === 'SALIR') return 'SALIR'
   return null
@@ -75,7 +81,7 @@ export function decideBotAction(text: string, state: WhatsAppBotState | null, no
   if (!state?.greeted_at) return 'welcome'
   // Los controles explícitos siguen disponibles incluso tras una expiración.
   if (command === 'SALIR') return 'exit'
-  if (command === 'ASESOR') return 'human'
+  if (['ASESOR', 'RECLAMO', 'SEGUIMIENTO', 'TRABAJO'].includes(command || '')) return 'human'
   if (command === 'MENU') return 'menu'
   if (command === 'NUEVA') return 'start_new_quote'
   if (command === 'RETOMAR' || command === 'COTIZAR') return 'start_quote'

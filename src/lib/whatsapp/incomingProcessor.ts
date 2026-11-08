@@ -28,13 +28,13 @@ import {
   resolvePendingInventoryChoice,
 } from '@/lib/ai/whatsappQuoteAssistant'
 import { generateQuoteFromSession } from '@/lib/serverQuoteEngine'
-import { createHandoffRequest, collectHandoffDetails } from '@/lib/whatsapp/handoffRequests'
+import { createHandoffRequest, collectHandoffDetails, setPendingHandoffReason } from '@/lib/whatsapp/handoffRequests'
 import { saveQuotePhoto } from '@/lib/whatsapp/photoStorage'
 import { canCloseInventory, isInventoryAddition, upsertInventoryPhoto } from '@/lib/whatsapp/inventoryResolution'
 import { applyInventoryEdits, parseInventoryEdits, type CatalogInventoryItem } from '@/lib/whatsapp/inventoryEdits'
 import { parseTaxDocumentChoice } from '@/lib/whatsapp/taxDocument'
 import { answerExtras } from '@/lib/whatsapp/extrasFlow'
-import { FREEFORM_START, applyLabelEdits, formatIntakeReview, formatIntakeNextPrompt, inferSinglePendingEdit, isContractClauseReply, intakeCanConfirm, markServiceAnswers, INTAKE_SERVICES } from '@/lib/whatsapp/freeformIntake'
+import { FREEFORM_START, applyLabelEdits, formatIntakeReview, formatIntakeNextPrompt, inferSinglePendingEdit, isContractClauseReply, intakeCanConfirm, nextIntakePending, markServiceAnswers, INTAKE_SERVICES } from '@/lib/whatsapp/freeformIntake'
 import { getAvailableSlotsForDate } from '@/lib/scheduleAvailability'
 import { supabaseAdmin } from '@/lib/supabase'
 import { WHATSAPP_WELCOME, botCommand, decideBotAction, isQuoteExpired, isGreeting } from '@/lib/whatsapp/botRouter'
@@ -44,6 +44,20 @@ import type { WhatsAppBotState } from '@/lib/whatsapp/botRouter'
 
 const HUMAN_REQUEST = /\b(ejecutivo|persona real|humano|asesor|hablar con alguien|atenci[oó]n humana)\b/i
 const CONFIRM_QUOTE = /^(confirmar|confirmo|confirmado|s[ií][,!.\s]+generar|generar cotizaci[oó]n|generar pdf)[!.\s]*$/i
+
+function reasonFromCommand(command: ReturnType<typeof botCommand>): string | null {
+  return command === 'RECLAMO' ? 'Reclamo'
+    : command === 'SEGUIMIENTO' ? 'Seguimiento de cotización'
+      : command === 'TRABAJO' ? 'Seguimiento de trabajo' : null
+}
+
+function handoffQuestion(reason: string | null): string {
+  if (reason === 'Reclamo') return 'Cuéntanos qué ocurrió. Si tienes una cotización, incluye su número.'
+  if (reason === 'Seguimiento de cotización') return '¿Qué necesitas saber de tu cotización? Incluye el número si lo tienes.'
+  if (reason === 'Seguimiento de trabajo') return '¿Qué necesitas saber del trabajo en curso? Indica el servicio o número de cotización.'
+  return '¿Qué necesitas? Puedes describir tu caso o responder RECLAMO, SEGUIMIENTO o TRABAJO.'
+}
+
 
 function normalizePhone(value: string) { return conversationKey(value) }
 
@@ -337,7 +351,7 @@ async function processFreeformQuoteTurn(
     if (session.state.intake?.stage === 'review' && intakeCanConfirm(session.state) && getNextSection(session.state) === 7) {
       await finalizeQuote(session, conversationId, to)
     } else {
-      await sendFreeformReview(session, conversationId, to, 'Todavía faltan datos o hay objetos por revisar. No generé ninguna cotización.')
+      await sendFreeformReview(session, conversationId, to, 'Todavía faltan algunos datos para cotizar.', 'next')
     }
     return
   }
@@ -349,6 +363,14 @@ async function processFreeformQuoteTurn(
 
   if (/^(ficha|resumen|ver ficha)[.!\s]*$/i.test(text)) {
     await sendFreeformReview(session, conversationId, to)
+    return
+  }
+
+  // Una respuesta SÍ/NO aislada no autoriza inferir a cuál de seis preguntas
+  // corresponde. Repetir el bloque completo en lugar de pasarla al modelo.
+  if (nextIntakePending(session.state)?.label === 'CONFIRMACIONES'
+    && /^(s[ií]|no)[.!\s]*$/i.test(text)) {
+    await sendAndLog(conversationId, to, formatIntakeNextPrompt(session.state))
     return
   }
 
@@ -425,7 +447,7 @@ async function processFreeformQuoteTurn(
     messageId: message.id, summary: patch.normalizedSummary,
     fieldsRecognized: Object.entries(patch).filter(([key, value]) => value !== null && !['normalizedSummary', 'explicitConfirmation'].includes(key)).map(([key]) => key),
   } })
-  await sendFreeformReview(session, conversationId, to, availability || 'Esto entendí de tu relato. Comprueba la ficha: puedes corregir varios datos juntos o seguir con el primer pendiente. Escribe FICHA cuando quieras volver a verla.')
+  await sendFreeformReview(session, conversationId, to, availability || '✓ Datos registrados. Sigamos con lo que falta.', 'next')
 }
 
 async function deactivateBot(phone: string, bot: WhatsAppBotState, mode: 'idle' | 'human') {
@@ -536,11 +558,17 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
       if (found.error) throw new Error(found.error.message)
       session = found.data as QuoteSessionRow | null
     }
+    // En una derivación ya abierta, cambiar la categoría no crea otro ticket.
+    const reason = reasonFromCommand(botCommand(message.text))
+    if (decision === 'human' && bot.mode === 'human') {
+      if (reason) await setPendingHandoffReason(phone, reason)
+      await sendWhatsAppText(to, handoffQuestion(reason))
+      return
+    }
     await deactivateBot(phone, bot, decision === 'human' ? 'human' : 'idle')
     if (decision === 'human') {
-      await createHandoffRequest({ phone, session })
-      await sendWhatsAppText(to,
-        'Te atenderá nuestro equipo. ¿Cuál es el motivo: reclamo, cotización, seguimiento o problema con el cotizador? Si tienes número de cotización, inclúyelo. Tu teléfono ya quedó registrado.')
+      await createHandoffRequest({ phone, session, reason })
+      await sendWhatsAppText(to, `Tu teléfono de WhatsApp ya quedó registrado. ${handoffQuestion(reason)}`)
     } else {
       await sendWhatsAppText(to, 'Atención terminada. Para volver, escribe *COTIZAR* o *ASESOR*.')
     }

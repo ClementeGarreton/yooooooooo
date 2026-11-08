@@ -7,15 +7,11 @@ export type IntakeService = 'packing' | 'disassembly' | 'assembly' | 'unpacking'
 export const INTAKE_SERVICES: IntakeService[] = ['packing', 'disassembly', 'assembly', 'unpacking']
 
 export const FREEFORM_START = [
-  '¡Vamos con tu cotización! Cuéntame en un mensaje:',
-  '• Nombre, correo y boleta/factura.',
-  '• Fecha y hora, origen y destino.',
-  '• Piso, ascensor y estacionamiento de ambos lugares.',
-  '• Muebles y cantidades (puedes adjuntar fotos).',
-  '• Servicios: EMBALAJE, DESARMADO, ARMADO, DESEMBALAJE: SÍ/NO y qué muebles.',
-  '',
-  'Puedes contarme todo libremente. Te mostraré lo entendido para corregirlo.',
-  'Escribe *FICHA* para revisar, *ASESOR* para atención humana.',
+  '¡Vamos con tu cotización! 🙂',
+  'Cuéntame en un solo mensaje: nombre, correo, boleta/factura, fecha, hora, origen, destino y muebles con cantidades.',
+  'Si conoces pisos, ascensores y servicios adicionales, inclúyelos también. Puedes enviar fotos.',
+  'Iremos completando solo lo pendiente; al final podrás revisar tu *ficha con variables*.',
+  'Escribe *ASESOR* si prefieres atención humana.',
 ].join('\n')
 
 const noAccent = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -98,6 +94,17 @@ export function applyLabelEdits(state: QuoteSessionState, input: string): LabelE
   const changed: string[] = []
   const errors: string[] = []
   let inventory: InventoryLabelUpdate | null = null
+  // Atajo solicitado: una respuesta marca NO en ambos ascensores y en los
+  // cuatro servicios. Los demás campos (piso, distancia, inventario) NO se inventan.
+  if (/^(?:no a todo|todo no|todos no)[.!\s]*$/i.test(noAccent(input.trim()))) {
+    next.origin.details.hasElevator = false
+    next.destination.details.hasElevator = false
+    for (const service of INTAKE_SERVICES) next.additionalServices[service] = false
+    next.additionalServices.observations = ''
+    if (next.intake) next.intake.serviceAnswers = [...INTAKE_SERVICES]
+    next.additionalServices.extrasStep = 'done'
+    return { state: next, changed: ['ASCENSOR ORIGEN', 'ASCENSOR DESTINO', 'EMBALAJE', 'DESARMADO', 'ARMADO', 'DESEMBALAJE'], errors, inventory, recognized: true }
+  }
   const rawLines = input.replace(/\r/g, '').split('\n').map((line) => line.trim()).filter(Boolean)
   if (!rawLines.length || !rawLines.every((line) => /^[^:]{2,90}:\s*.*$/.test(line) || /^[-•]\s*.+/.test(line))) {
     return { state: next, changed, errors, inventory, recognized: false }
@@ -123,7 +130,9 @@ export function applyLabelEdits(state: QuoteSessionState, input: string): LabelE
     // "Solo vajilla" / "dos camas" expresa intención afirmativa y la selección específica.
     const enabled = direct === null ? !/^(ninguno|ninguna|sin servicio|no aplica)$/i.test(value) : direct
     assign(next.additionalServices, key, enabled, label)
-    if (enabled && (direct === null || /\b(solo|únicamente|unicamente|camas?|vajilla|cajas?|muebles?)\b/i.test(value))) {
+    const withDetails = direct === null || /^s[ií]\s*[,;:—-]\s*\S/i.test(value)
+      || /\b(solo|únicamente|unicamente|camas?|vajilla|cajas?|muebles?)\b/i.test(value)
+    if (enabled && withDetails) {
       const note = `${label}: ${value}`
       const current = next.additionalServices.observations === '__pending__' ? '' : next.additionalServices.observations
       if (!current.includes(note)) next.additionalServices.observations = [current, note].filter(Boolean).join('\n')
@@ -265,6 +274,28 @@ export function applyLabelEdits(state: QuoteSessionState, input: string): LabelE
 export function nextIntakePending(state: QuoteSessionState): { label: string; question: string; remaining: number } | null {
   const missing = intakeMissing(state)
   if (!missing.length) return null
+  const booleanPending: string[] = []
+  if (state.origin.details.hasElevator === null) booleanPending.push('ASCENSOR ORIGEN')
+  if (state.destination.details.hasElevator === null) booleanPending.push('ASCENSOR DESTINO')
+  const serviceNames: Record<IntakeService, string> = {
+    packing: 'EMBALAJE', disassembly: 'DESARMADO', assembly: 'ARMADO', unpacking: 'DESEMBALAJE',
+  }
+  for (const service of INTAKE_SERVICES) {
+    if (!state.intake?.serviceAnswers?.includes(service)) booleanPending.push(serviceNames[service])
+  }
+  if (booleanPending.length) {
+    return {
+      label: 'CONFIRMACIONES', remaining: missing.length,
+      question: [
+        '*Respondamos todas las preguntas SÍ/NO juntas.*',
+        'Copia las líneas que faltan y escribe SÍ o NO:',
+        ...booleanPending.map((label) => `${label}: SÍ/NO`),
+        'Si algún servicio es SÍ, indica qué muebles (ej.: DESARMADO: SÍ, dos camas).',
+        'Si todo es NO, basta con responder *NO A TODO*.',
+        'Si solo rechazas los servicios: *SERVICIOS: NINGUNO*.',
+      ].join('\n'),
+    }
+  }
   const label = missing[0]
   const question = label === 'INVENTARIO'
     ? (state.pendingInventory.length
@@ -292,7 +323,9 @@ export function formatIntakeNextPrompt(state: QuoteSessionState): string {
   const inputLabel = pending.label.startsWith('DOCUMENTO') ? 'DOCUMENTO'
     : pending.label.startsWith('FECHA') ? 'FECHA'
       : pending.label.startsWith('HORA') ? 'HORA' : pending.label
-  return `✏️ *Pendiente: ${pending.label}*\n${pending.question}\nResponde directamente o escribe *FICHA* para revisar tus datos.`
+  return pending.label === 'CONFIRMACIONES'
+    ? `${pending.question}\nEscribe *FICHA* si quieres revisar todos los datos.`
+    : `✏️ *Pendiente: ${pending.label}*\n${pending.question}\nResponde directamente o escribe *FICHA* para revisar tus datos.`
 }
 
 /** Una respuesta organizada según las cláusulas se parsea como relato, no como etiqueta incorrecta. */
