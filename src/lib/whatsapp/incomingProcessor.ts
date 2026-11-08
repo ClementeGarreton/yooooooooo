@@ -27,9 +27,10 @@ import {
   pendingInventoryQuestion,
   resolvePendingInventoryChoice,
 } from '@/lib/ai/whatsappQuoteAssistant'
-import { generateQuoteFromSession, calculateSessionQuote } from '@/lib/serverQuoteEngine'
-import { createHandoffRequest, collectHandoffDetails, setPendingHandoffReason } from '@/lib/whatsapp/handoffRequests'
-import { TOMMY_QUOTE_START, TOMMY_FOLLOWUP, TOMMY_EXECUTIVE, tommyMissing, tommyPendingMessage, tommyCaseSummary, applyTommyAnswers, isTommyFormReply, isOnlyTommyServiceAnswers, tommyAnswerOnlyForAI, tommyDifferentialResult } from '@/lib/whatsapp/tommyFlow'
+import { generateQuoteFromSession, generatePreliminaryWhatsAppQuote } from '@/lib/serverQuoteEngine'
+// La tabla handoff_requests aún no existe en producción.
+// import { createHandoffRequest, collectHandoffDetails, setPendingHandoffReason } from '@/lib/whatsapp/handoffRequests'
+import { TOMMY_QUOTE_START, TOMMY_FOLLOWUP, TOMMY_EXECUTIVE, tommyMissing, tommyPendingMessage, applyTommyAnswers, isTommyFormReply, isOnlyTommyServiceAnswers, tommyAnswerOnlyForAI, tommyDifferentialResult } from '@/lib/whatsapp/tommyFlow'
 import { applyAccessForm, isTommyAccessReply } from '@/lib/whatsapp/tommyAccess'
 import { saveQuotePhoto } from '@/lib/whatsapp/photoStorage'
 import { canCloseInventory, isInventoryAddition, upsertInventoryPhoto } from '@/lib/whatsapp/inventoryResolution'
@@ -182,12 +183,13 @@ async function handleHumanHandoff(session: QuoteSessionRow, conversationId: stri
   await saveQuoteSession(session.id, session.state, { status: 'handoff' })
   await setBotMode(normalizePhone(to), 'human')
   await updateConversation(conversationId, { status: 'handoff' })
-  await createHandoffRequest({ phone: normalizePhone(to), session })
+  // Desactivado: requiere handoff_requests (tabla aún inexistente).
+  // await createHandoffRequest({ phone: normalizePhone(to), session })
   await logAction({ conversationId, action: 'human_handoff_requested', payload: { quoteSessionId: session.id } })
   await sendAndLog(
     conversationId,
     to,
-    'Te atenderá nuestro equipo. ¿Cuál es el motivo: reclamo, cotización, seguimiento o problema con el cotizador? Si tienes un número de cotización, indícalo también. Tu teléfono y lo conversado ya quedaron registrados.'
+    'La derivación automática está temporalmente desactivada. Tu cotización sigue guardada; escribe *COTIZAR* para retomarla.'
   )
 }
 
@@ -294,43 +296,57 @@ async function validateFreeformSchedule(state: QuoteSessionRow['state']): Promis
   return ''
 }
 
-/** Con seis grupos completos se crea un expediente, NO un PDF final inventando nombre/correo/hora. */
+/** Al completar los seis grupos: precio y PDF, sin dependencia de secretaría. */
 async function finishTommyQuote(session: QuoteSessionRow, conversationId: string, to: string) {
   const missing = tommyMissing(session.state)
   if (missing.length) {
     await sendAndLog(conversationId, to, tommyPendingMessage(session.state)!)
     return
   }
-  if (session.state.intake?.tommySubmittedAt) {
-    await sendAndLog(conversationId, to, 'Tu solicitud ya quedó registrada. Si necesitas corregir algo, escríbelo aquí o responde *MENÚ*.')
+  // No recalcular al recibir una confirmación duplicada; reenviar el enlace existente.
+  if (session.pdf_url && session.quote_id && session.status === 'quoted') {
+    await sendAndLog(conversationId, to,
+      `Tu cotización estimativa ${session.quote_id} ya está lista: ${session.pdf_url}`)
     return
   }
-  let estimate: number | null = null
+  let quote: Awaited<ReturnType<typeof generatePreliminaryWhatsAppQuote>>
   try {
-    // Usa exactamente la misma tarifa vigente que el cotizador web.
-    // No se promete valor definitivo cuando faltan datos internos de acceso o distancia.
-    const result = await calculateSessionQuote(session.state)
-    if (Number.isFinite(result.estimatedPrice) && result.estimatedPrice > 0) estimate = result.estimatedPrice
+    quote = await generatePreliminaryWhatsAppQuote(session)
   } catch (error) {
-    console.warn('[WhatsApp][Tommy] No se pudo precalcular; deriva para revisión', error)
+    // NO desactivar el bot ni pedir nuevamente los seis datos. Se puede reintentar.
+    console.error('[WhatsApp][cotización] Falló la generación del precio o PDF:', error)
+    await sendAndLog(conversationId, to,
+      'Ya tengo tus datos. Hubo un problema técnico al generar el PDF, no con tus respuestas. Escribe *CONFIRMAR* para reintentarlo sin repetir nada.')
+    return
   }
-  const stamped = {
-    ...session.state,
-    intake: { ...session.state.intake!, tommySubmittedAt: new Date().toISOString() },
+  // Entregar precio y enlace ANTES de operaciones administrativas auxiliares.
+  await sendAndLog(conversationId, to, [
+    `✅ *Cotización estimativa ${quote.quoteId}*`,
+    `Volumen: ${quote.totalVolume.toFixed(2)} m³`,
+    `Distancia: ${quote.totalDistance.toFixed(1)} km`,
+    `*Precio estimado: $${quote.estimatedPrice.toLocaleString('es-CL')}*`,
+    'Sujeto a revisión antes de confirmar el servicio.',
+    `PDF: ${quote.pdfUrl}`,
+  ].join('\n'))
+  try {
+    await sendWhatsAppDocument(to, quote.pdfUrl, quote.pdfFileName, 'Cotización estimativa Yo Me Encargo')
+    await logMessage({ conversationId, direction: 'outbound', role: 'assistant',
+      content: quote.pdfUrl, messageType: 'document',
+      metadata: { quoteId: quote.quoteId, filename: quote.pdfFileName } })
+  } catch (error) {
+    // El enlace ya fue enviado; no fingir que falló toda la cotización.
+    console.error('[WhatsApp][cotización] PDF guardado, pero Meta no recibió el adjunto:', error)
   }
-  // Registrar primero en la bandeja de secretaría. Si el registro falla,
-  // la sesión sigue pendiente y podrá reintentarse sin pérdida de datos.
-  await createHandoffRequest({
-    phone: normalizePhone(to), session,
-    reason: 'Cotización pendiente de revisión humana',
-    details: tommyCaseSummary(session.state, estimate),
-    status: 'ready', estimatedPrice: estimate,
-  })
-  session = await saveQuoteSession(session.id, stamped, estimate !== null ? { estimated_price: estimate } : {})
-  await logAction({ conversationId, action: 'tommy_six_groups_completed', payload: { sessionId: session.id, estimatedPrice: estimate } })
-  await updateConversation(conversationId, { status: 'handoff' })
-  await setBotMode(normalizePhone(to), 'idle')
-  await sendAndLog(conversationId, to, '¡Gracias! 🙌 Recibimos tus seis datos. Prepararemos tu presupuesto estimativo, sujeto a revisión humana, y te contactaremos a la brevedad 🚚')
+  try {
+    await setBotMode(normalizePhone(to), 'idle')
+    await updateConversation(conversationId, { status: 'quoted', converted: true, quote_id: quote.quoteId })
+    await logAction({ conversationId, action: 'quote_generated', payload: {
+      quoteId: quote.quoteId, estimatedPrice: quote.estimatedPrice, pdfUrl: quote.pdfUrl,
+    } })
+  } catch (error) {
+    // El PDF ya se entregó: un error de telemetría NO anula la cotización.
+    console.error('[WhatsApp][cotización] PDF entregado, falló el estado administrativo:', error)
+  }
 }
 
 /** Mensaje libre con los seis grupos de Tommy: parsear todo a la vez, no pedir 17 campos. */
@@ -443,23 +459,12 @@ async function processTommyQuoteTurn(
         }
       }
     } catch (error) {
-      // Un fallo de OpenAI, del inventario o de su esquema no significa que
-      // el cliente haya contestado mal. NO pedir el mismo formulario en bucle.
-      // Guardar los Sí/No verificables y derivar el mensaje original a secretaría
-      // para que ninguna información se pierda si falla el análisis automático.
-      console.error('[WhatsApp][Tommy] Falló el análisis de respuestas; se deriva sin repetir preguntas:', error)
+      // Recuperar lo explícito, guardar y CONTINUAR sin handoff_requests.
+      console.error('[WhatsApp][Tommy] Falló interpretación de IA; conservamos respuestas:', error)
       const recovered = applyTommyAnswers(nextState, text)
       if (recovered.intake) recovered.intake.stage = 'review'
       session = await saveQuoteSession(session.id, recovered)
-      await createHandoffRequest({
-        phone: normalizePhone(to), session,
-        reason: 'Revisión manual: interpretación automática no disponible',
-        details: `Mensaje original del cliente (no reinterpretado):\n${text.slice(0, 4500)}`,
-        status: 'ready',
-      })
-      await updateConversation(conversationId, { status: 'handoff' })
-      await setBotMode(normalizePhone(to), 'idle')
-      await sendAndLog(conversationId, to, 'Recibimos tus respuestas. No necesitas repetirlas: dejamos tu mensaje para revisión de nuestro equipo. 🙌')
+      await finishTommyQuote(session, conversationId, to)
       return
     }
   }
@@ -715,11 +720,11 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
     let session = decision === 'start_new_quote'
       ? await createWhatsAppSession(phone, customerPhone(to))
       : await getOrCreateWhatsAppSession(phone)
-    // Después de enviar un expediente a secretaría, "1 / Cotizar" inicia otro;
-    // RETOMAR conserva explícitamente el expediente anterior hasta entonces.
+    // Después de generar un PDF, COTIZAR inicia otra cotización.
+    // RETOMAR conserva la cotización si todavía estaba en recopilación.
     if (botCommand(message.text) === 'COTIZAR' && session.state.intake?.tommySubmittedAt) {
       const { error: archiveError } = await supabaseAdmin.from('quote_sessions')
-        .update({ status: 'handoff', updated_at: new Date().toISOString() })
+        .update({ status: 'closed', updated_at: new Date().toISOString() })
         .eq('id', session.id).in('status', ['collecting', 'ready'])
       if (archiveError) throw new Error(archiveError.message)
       session = await createWhatsAppSession(phone, customerPhone(to))
@@ -763,14 +768,14 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
     // En una derivación ya abierta, cambiar la categoría no crea otro ticket.
     const reason = reasonFromCommand(botCommand(message.text))
     if (decision === 'human' && bot.mode === 'human') {
-      if (reason) await setPendingHandoffReason(phone, reason)
-      await sendWhatsAppText(to, handoffQuestion(reason))
+      // if (reason) await setPendingHandoffReason(phone, reason)  // sin tabla handoff_requests
+      await sendWhatsAppText(to, 'La derivación automática está temporalmente desactivada. Escribe *COTIZAR* para continuar.')
       return
     }
     await deactivateBot(phone, bot, decision === 'human' ? 'human' : 'idle')
     if (decision === 'human') {
-      await createHandoffRequest({ phone, session, reason })
-      await sendWhatsAppText(to, handoffQuestion(reason))
+      // await createHandoffRequest({ phone, session, reason })  // sin tabla handoff_requests
+      await sendWhatsAppText(to, 'La derivación automática está temporalmente desactivada. Puedes continuar tu cotización con *COTIZAR*.')
     } else {
       await sendWhatsAppText(to, 'Atención terminada. Para volver, escribe *COTIZAR* o *ASESOR*.')
     }
@@ -786,8 +791,8 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
 
   if (decision === 'silent') {
     if (bot.mode === 'human') {
-      const result = await collectHandoffDetails(phone, message.text)
-      if (result.received) await sendWhatsAppText(to, result.reply)
+      // collectHandoffDetails requiere handoff_requests; no registrar solicitudes falsas.
+      await touchIdleActivity(phone)
     }
     if (bot.mode === 'idle') await touchIdleActivity(phone)
     return

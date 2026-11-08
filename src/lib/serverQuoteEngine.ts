@@ -98,7 +98,7 @@ export async function calculateSessionQuote(state: QuoteSessionState) {
     origin: { floor: state.origin.details.floor ?? undefined, hasElevator: state.origin.details.hasElevator ?? undefined },
     destination: { floor: state.destination.details.floor ?? undefined, hasElevator: state.destination.details.hasElevator ?? undefined },
     distanceKm: totalDistance,
-    dateTime: state.schedule.date ? `${state.schedule.date}T${state.schedule.time || '12:00'}:00` : null,
+    dateTime: state.schedule.date && state.schedule.time ? `${state.schedule.date}T${state.schedule.time}:00` : null,
     isFlexible: state.schedule.isFlexible,
     isCompany: state.personalInfo.isCompany,
     additionalServices: { disassembly: state.additionalServices.disassembly, assembly: state.additionalServices.assembly,
@@ -142,8 +142,8 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
   y += 8
   pdf.setFont('helvetica', 'normal')
   pdf.setFontSize(10)
-  pdf.text(`Nombre: ${state.personalInfo.name || ''}`, 18, y); y += 6
-  pdf.text(`Email: ${state.personalInfo.email || ''}`, 18, y); y += 6
+  pdf.text(`Nombre: ${state.personalInfo.name || 'No informado'}`, 18, y); y += 6
+  pdf.text(`Email: ${state.personalInfo.email || 'No informado'}`, 18, y); y += 6
   pdf.text(`Telefono: ${state.personalInfo.phone}`, 18, y); y += 6
   pdf.text(`Documento solicitado: ${state.taxDocument || 'Por definir'}`, 18, y); y += 9
 
@@ -152,7 +152,7 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
   pdf.text('Mudanza', 18, y); y += 8
   pdf.setFont('helvetica', 'normal')
   pdf.setFontSize(10)
-  pdf.text(`Fecha: ${state.schedule.date || ''} · ${state.schedule.time || ''}`, 18, y); y += 6
+  pdf.text(`Fecha: ${state.schedule.date || 'Por confirmar'} · Hora: ${state.schedule.time || 'Por confirmar'}`, 18, y); y += 6
   pdf.text(`Origen: ${addressText(state.origin.address)}`, 18, y, { maxWidth: 175 }); y += 8
   pdf.text(`Destino: ${addressText(state.destination.address)}`, 18, y, { maxWidth: 175 }); y += 8
   pdf.text(`Distancia estimada: ${quote.totalDistance} km`, 18, y); y += 6
@@ -331,4 +331,46 @@ export async function generateQuoteFromSession(session: QuoteSessionRow): Promis
 
   // Meta descarga el PDF desde este enlace: va por el dominio del sitio, no por el almacenamiento.
   return { quoteId, prospectId, pdfUrl: toHiddenFileUrl(pdfUrl, siteBaseUrl() || 'https://yomeencargo.cl'), pdfFileName: fileName, ...quote }
+}
+
+/**
+ * PDF estimativo de los seis datos de Tommy. No exige nombre, correo, boleta o
+ * una hora que el cliente nunca proporcionó. Guarda la cotización en la sesión
+ * de WhatsApp ya existente; no crea tickets en handoff_requests ni prospectos
+ * sin identidad verificable. El generador antiguo sigue disponible para fichas
+ * completas del cotizador web.
+ */
+export async function generatePreliminaryWhatsAppQuote(session: QuoteSessionRow): Promise<ServerQuoteResult> {
+  const state = session.state
+  if (!state.origin.address.street || !state.destination.address.street || !state.schedule.date || !state.items.length || state.pendingInventory.length) {
+    throw new Error('Faltan direcciones, fecha o inventario para calcular el precio estimativo')
+  }
+  const quote = await calculateSessionQuote(state)
+  if (!Number.isFinite(quote.estimatedPrice) || quote.estimatedPrice <= 0) {
+    throw new Error('El cálculo no devolvió un precio estimativo válido')
+  }
+  const quoteId = session.quote_id || `YME-WA-${Date.now().toString(36).toUpperCase()}`
+  const photoPaths = (state.inventoryPhotos || []).filter((photo) => photo.storagePath).map((photo) => photo.storagePath!)
+  const photoData = (await Promise.all(photoPaths.slice(0, 12).map(loadQuotePhoto))).filter((value): value is string => Boolean(value))
+  const pdf = generateQuotePdfBuffer(state, quote, quoteId, photoData)
+  const fileName = `Cotizacion_WhatsApp_${quoteId}.pdf`
+  const path = `prospect-pdfs/whatsapp_preliminar_${session.id}_${Date.now()}.pdf`
+  const { error: uploadError } = await supabaseAdmin.storage.from('bookings').upload(path, pdf, {
+    contentType: 'application/pdf', upsert: true,
+  })
+  if (uploadError) throw new Error(`No se pudo guardar el PDF estimativo: ${uploadError.message}`)
+  const pdfUrl = supabaseAdmin.storage.from('bookings').getPublicUrl(path).data.publicUrl
+  const { error: saveError } = await supabaseAdmin.from('quote_sessions').update({
+    status: 'quoted', quote_id: quoteId, estimated_price: quote.estimatedPrice,
+    total_volume: quote.totalVolume, total_weight: quote.totalWeight,
+    total_distance: quote.totalDistance, recommended_vehicle: quote.recommendedVehicle,
+    pdf_url: pdfUrl,
+    state: { ...state, intake: { ...state.intake!, tommySubmittedAt: new Date().toISOString() } },
+    updated_at: new Date().toISOString(),
+  }).eq('id', session.id)
+  if (saveError) throw new Error(`PDF generado, pero no se pudo cerrar la sesión: ${saveError.message}`)
+  return {
+    quoteId, prospectId: '', pdfUrl: toHiddenFileUrl(pdfUrl, siteBaseUrl() || 'https://yomeencargo.cl'),
+    pdfFileName: fileName, ...quote,
+  }
 }

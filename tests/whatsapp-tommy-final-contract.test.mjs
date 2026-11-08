@@ -126,15 +126,17 @@ test('el resumen de secretaría mantiene los antecedentes sin inventar tarifas',
   assert.match(tommyCaseSummary(s,123456),/\$123.456/)
 })
 
-test('las seis respuestas no generan PDF ni inventan datos tributarios',()=>{
+test('al completar los seis grupos se genera precio estimativo y PDF sin derivación automática',()=>{
   const src=readFileSync(new URL('../src/lib/whatsapp/incomingProcessor.ts',import.meta.url),'utf8')
   const start=src.indexOf('async function finishTommyQuote(')
   const end=src.indexOf('async function processTommyQuoteTurn(',start)
   const code=src.slice(start,end)
-  assert.match(code,/calculateSessionQuote/)
-  assert.match(code,/createHandoffRequest/)
-  assert.match(code,/tommyPendingMessage/)
-  assert.doesNotMatch(code,/generateQuoteFromSession|sendWhatsAppDocument|uploadPdf/)
+  assert.match(code,/tommyMissing/)
+  assert.match(code,/generatePreliminaryWhatsAppQuote/)
+  assert.match(code,/sendWhatsAppDocument/)
+  assert.match(code,/Precio estimado:/)
+  assert.doesNotMatch(code,/createHandoffRequest|collectHandoffDetails/)
+  assert.match(code,/CONFIRMAR.*reintentarlo/)
 })
 
 test('el formulario numerado no se interpreta como etiqueta técnica desconocida',()=>{
