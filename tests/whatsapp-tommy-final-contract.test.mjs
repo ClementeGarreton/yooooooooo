@@ -47,7 +47,7 @@ test('textos de seguimiento y ejecutivo son los acordados, sin 17 campos',()=>{
 
 test('cotización pide únicamente seis grupos, con instrucción de copiar',()=>{
   assert.equal((TOMMY_QUOTE_START.match(/\d\) /g) || []).length,6)
-  for(const word of ['Direcciones de origen y destino','Lista de artículos','Fecha','Escaleras','Distancia de carga','Embalaje']) assert.match(TOMMY_QUOTE_START,new RegExp(word))
+  for(const word of ['Direcciones de origen y destino','Lista de artículos','Fecha','Acceso por ascensor o escalera','Distancia de carga','Embalaje']) assert.match(TOMMY_QUOTE_START,new RegExp(word))
   assert.match(TOMMY_QUOTE_START,/Copia este mensaje/)
   assert.doesNotMatch(TOMMY_QUOTE_START,/boleta|RUT|razón social|documento tributario|17 campos/i)
 })

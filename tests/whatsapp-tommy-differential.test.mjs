@@ -30,7 +30,7 @@ test('seis perturbaciones se separan del formulario completo sin repetir pregunt
     .replace('calle, número, comuna y número de departamento si corresponde.', 'calle Piñera 342 a Camino el Alba 9184, en Las Condes.')
     .replace('2) Lista de artículos a trasladar.', '2) Lista de artículos a trasladar. 2 escritorios y 1 refrigerador')
     .replace('3) Fecha del flete o mudanza.', '3) Fecha del flete o mudanza. el 16 de noviembre 10am')
-    .replace('Si no hay, responde No.', 'Si no hay, responde No. No no hay')
+    .replace('Si no se requieren escaleras, responde No.', 'Si no se requieren escaleras, responde No. No no hay')
     .replace('(Sí / No)', '(Sí / No) no')
     .replace('Si es así, indícanos qué artículos.', 'Si es así, indícanos qué artículos. los 2 escritorios')
   const d = tommyDifferentialResult(reply)
@@ -57,7 +57,7 @@ test('los campos independientes no se completan por copiar un recordatorio',()=>
 test('mensaje de pendientes editado cancela solamente las preguntas contestadas',()=>{
   const st = state()
   const base = tommyPendingMessage(st)
-  const reply = base.replace(' (o indica No)', ' (o indica No) No no hay')
+  const reply = base.replace('Si se requieren escaleras, indica qué muebles; de lo contrario, responde No', 'Si se requieren escaleras, indica qué muebles; de lo contrario, responde No No no hay')
     .replace('(Sí/No)', '(Sí/No) no')
     .replace('Embalaje: ¿qué artículos debemos embalar? (o indica No)', 'Embalaje: ¿qué artículos debemos embalar? (o indica No) mis dos maceteros pintados')
   const d=tommyDifferentialResult(reply,st)
@@ -66,7 +66,7 @@ test('mensaje de pendientes editado cancela solamente las preguntas contestadas'
   assert.match(tommyAnswerOnlyForAI(reply,st),/mis dos maceteros pintados/)
 })
 test('títulos con erratas siguen alineándose por número sin inventar un Sí',()=>{
-  const reply=form.replace('4) Escaleras: indícanos', '4) Ecaleeras: indicanos')
+  const reply=form.replace('4) Acceso por ascensor o escalera:', '4) Acseso por ascensor o escalera:')
     .replace('responde No.', 'responde No. no no hay')
     .replace('6) Embalaje:', '6) Enbalaje:')
     .replace('Si es así, indícanos qué artículos.', 'Si es así, indícanos qué artículos. no')

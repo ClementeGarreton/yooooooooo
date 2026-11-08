@@ -23,7 +23,7 @@ export const TOMMY_QUOTE_START = [
   '1) Direcciones de origen y destino: calle, número, comuna y número de departamento si corresponde. | Respuesta:',
   '2) Lista de artículos a trasladar. | Respuesta:',
   '3) Fecha del flete o mudanza. | Respuesta:',
-  '4) Escaleras: indícanos qué artículos hay que subir o bajar por escalera, cuántos pisos y si es en el origen, el destino o ambos. Si no hay, responde No. | Respuesta:',
+  '4) Acceso por ascensor o escalera: ¿hay ascensor utilizable para los muebles en origen y destino? Si debes subir o bajar muebles por escaleras, indica lugar, cantidad de pisos y cuáles muebles. Si no se requieren escaleras, responde No. | Respuesta:',
   '5) Distancia de carga: ¿hay que caminar un tramo largo desde el camión hasta el lugar de carga o descarga? (Sí / No) | Respuesta:',
   '6) Embalaje: ¿necesitas que embalemos algo? Si es así, indícanos qué artículos. | Respuesta:',
   '',
@@ -52,9 +52,32 @@ const labels: Record<TommyField, string> = {
   direcciones: 'Direcciones de origen y destino (calle, número y comuna; departamento si corresponde)',
   articulos: 'Lista de artículos con cantidades',
   fecha: 'Fecha del flete o mudanza',
-  escaleras: 'Escaleras: artículos, pisos y si corresponde a origen, destino o ambos (o indica No)',
+  escaleras: 'Acceso por ascensor o escalera: ¿hay ascensor utilizable para los muebles en origen y destino? Si hay que utilizar escaleras, indica en cuál lugar, cuántos pisos y qué muebles (o responde No si no se necesitan)',
   acarreo: 'Distancia de carga: ¿hay que caminar un tramo largo desde el camión? (Sí/No)',
   embalaje: 'Embalaje: ¿qué artículos debemos embalar? (o indica No)',
+}
+
+const simplifyAccess = (v: string) => v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
+
+/** «No hay ascensor» significa lo contrario de «no se necesitan escaleras». */
+function noStairs(value: string): boolean {
+  const v = simplifyAccess(value)
+  if (/\b(?:no hay|sin|no tiene|no existe) ascensor\b/.test(v)) return false
+  return /^(?:no|no no|no no hay|sin escaleras|ninguno|ninguna|no se (?:usan|requieren|necesitan) escaleras)[.!\s]*$/.test(v) ||
+    /\b(?:sin necesidad de escaleras|no hace falta usar escaleras)\b/.test(v)
+}
+
+function stairsPendingLabel(state: QuoteSessionState): string {
+  const detail = state.intake?.tommyDetails?.escaleras || ''
+  const partial = simplifyAccess(detail).match(/\b(\d{1,2})\s*pisos?\s*(?:en|de|del)\s*(?:el\s*)?(origen|destino)\b/)
+  const known = partial ? `Ya indicaste ${partial[1]} pisos en ${partial[2]}. ` : ''
+  const sides = (['origin','destination'] as const).filter(place => state[place].details.hasElevator === null)
+  const question = sides.length === 1
+    ? `En ${sides[0] === 'origin' ? 'origen' : 'destino'}, ¿hay ascensor utilizable para los muebles o habrá que moverlos por escaleras?`
+    : sides.length === 0
+      ? 'Si algún mueble debe subir o bajar por escaleras, ¿cuáles, en qué lugar y cuántos pisos?'
+      : '¿Hay ascensor utilizable para trasladar los muebles en origen y destino, o será necesario usar escaleras?'
+  return `Acceso por ascensor o escalera: ${known}${question} Si se requieren escaleras, indica qué muebles; de lo contrario, responde No`
 }
 
 export function tommyMissing(state: QuoteSessionState): TommyField[] {
@@ -68,7 +91,7 @@ export function tommyMissing(state: QuoteSessionState): TommyField[] {
       (state.inventoryPhotos || []).some(photo => photo.status !== 'done')) result.push('articulos')
   if (!state.schedule.date) result.push('fecha')
   for (const name of ['escaleras', 'acarreo', 'embalaje'] as const) {
-    if (!marked.has(name)) result.push(name)
+    if (!marked.has(name) && !(name === 'escaleras' && state.origin.details.hasElevator === true && state.destination.details.hasElevator === true)) result.push(name)
   }
   return result
 }
@@ -79,7 +102,7 @@ export function tommyPendingMessage(state: QuoteSessionState): string | null {
   return [
     '¡Gracias por la información! 🙌 Para enviarte el presupuesto solo nos falta:',
     '',
-    ...missing.map(name => `- ${labels[name]} | Respuesta:`),
+    ...missing.map(name => `- ${name === 'escaleras' ? stairsPendingLabel(state) : labels[name]} | Respuesta:`),
     '',
     'Copia este mensaje y completa «Respuesta:» en cada pendiente.',
     'Apenas nos respondas, te enviamos tu cotización 🚚',
@@ -94,6 +117,10 @@ const affirmative = (value: string) => /^(si\b|hay\b|necesito\b|se requiere\b|co
 // Incluir la referencia original y TODOS los rótulos de pendientes. No depender
 // de que el cliente copie precisamente la última plantilla: puede contestar un
 // mensaje anterior después de haber cerrado otras preguntas.
+// Mantener compatibilidad con formularios enviados antes de esta corrección.
+const OLD_STAIRS_QUESTION = '4) Escaleras: indícanos qué artículos hay que subir o bajar por escalera, cuántos pisos y si es en el origen, el destino o ambos. Si no hay, responde No. | Respuesta:'
+const OLD_STAIRS_PENDING = '- Escaleras: artículos, pisos y si corresponde a origen, destino o ambos (o indica No) | Respuesta:'
+
 export const TOMMY_PENDING_REFERENCE = [
   '- ' + labels.direcciones,
   '- ' + labels.articulos,
@@ -104,7 +131,7 @@ export const TOMMY_PENDING_REFERENCE = [
 ].join('\n')
 
 function references(state?: QuoteSessionState): string[] {
-  return [TOMMY_QUOTE_START, TOMMY_PENDING_REFERENCE, ...(state ? [tommyPendingMessage(state) || ''] : [])]
+  return [TOMMY_QUOTE_START, TOMMY_PENDING_REFERENCE, OLD_STAIRS_QUESTION, OLD_STAIRS_PENDING, ...(state ? [tommyPendingMessage(state) || ''] : [])]
 }
 
 /** Solo el delta, nunca las preguntas que el cliente copió literalmente. */
@@ -158,12 +185,20 @@ export function applyTommyAnswers(state: QuoteSessionState, message: string): Qu
     const isNo = negative(value)
     const isYes = affirmative(value)
     if (key === 'escaleras') {
-      // Sí necesita también ubicación, pisos y artículos; No se resuelve solo.
-      const informative = /\b(origen|destino|ambos)\b/i.test(value) &&
-        /\b(?:\d+(?:er|ro|do|°|º)?|uno|dos|tres|cuatro|cinco|primer|segundo|tercer)\s*(?:pisos?|plantas?)\b/i.test(value) &&
-        /\b(camas?|cajas?|sof[aá]s?|sill[oó]nes?|mesas?|escritorios?|muebles?|televisores?|lavadoras?|refrigeradores?|art[ií]culos?|todos?)\b/i.test(value)
-      if (isNo || informative) { answered.add(key); details.escaleras = value }
-      else { answered.delete(key); delete details.escaleras }
+      // Guardar antecedentes parciales sin dar el campo por completo.
+      const old = details.escaleras || ''
+      const combined = old && !noStairs(old) && !noStairs(value) ? `${old}; ${value}` : value
+      const normalized = simplifyAccess(combined)
+      const hasSide = /\b(origen|destino|ambos)\b/.test(normalized)
+      const hasFloors = /\b(?:\d+(?:er|ro|do|°|º)?|uno|dos|tres|cuatro|cinco|primer|segundo|tercer)\s*(?:pisos?|plantas?)\b/.test(normalized)
+      const hasFurniture = /\b(camas?|cajas?|sofas?|sillones?|mesas?|escritorios?|muebles?|televisores?|lavadoras?|refrigeradores?|articulos?|todos?)\b/.test(normalized)
+      const bothElevators = /\b(?:ascensor(?:es)?\s+(?:en\s+)?ambos|ascensor(?:es)?\s+(?:en\s+)?origen y destino|(?:en\s+)?origen y destino\s+(?:(?:con|hay|tienen?)\s+)?ascensor(?:es)?)\b/.test(simplifyAccess(value)) &&
+        !/\b(?:sin ascensor|no hay ascensor|no tienen ascensor)\b/.test(simplifyAccess(value))
+      const complete = noStairs(value) || bothElevators || (hasSide && hasFloors && hasFurniture) ||
+        (next.origin.details.hasElevator === true && next.destination.details.hasElevator === true)
+      details.escaleras = noStairs(value) || bothElevators ? value : combined
+      if (complete) answered.add(key)
+      else answered.delete(key)
     }
     if (key === 'acarreo') {
       // Tommy pidió aclarar en cuál inmueble hay acarreo cuando es afirmativo.
@@ -221,7 +256,7 @@ export function tommyCaseSummary(state: QuoteSessionState, estimated: number | n
     `Origen: ${side(state.origin)}`, `Destino: ${side(state.destination)}`,
     `Fecha: ${state.schedule.date || 'Pendiente'}`,
     `Artículos del catálogo: ${state.items.map(i=>`${i.quantity} × ${i.catalogItemId}`).join(', ')}`,
-    `Escaleras: ${fields.escaleras || 'No informado'}`,
+    `Acceso (ascensor o escaleras): ${fields.escaleras || (state.origin.details.hasElevator === true && state.destination.details.hasElevator === true ? 'Ascensor en origen y destino' : 'No informado')}`, 
     `Distancia de carga: ${fields.acarreo || 'No informado'}`,
     `Embalaje: ${fields.embalaje || 'No informado'}`,
     `Precio automático preliminar: ${estimated === null ? 'No calculable automáticamente' : `$${estimated.toLocaleString('es-CL')}`}`,
@@ -231,12 +266,13 @@ export function tommyCaseSummary(state: QuoteSessionState, estimated: number | n
 
 /** Las líneas numeradas de Tommy no son etiquetas antiguas de la ficha técnica. */
 export function isTommyFormReply(text: string): boolean {
-  return /^\s*(?:[-•]\s*)?(?:[1-6]\s*[).:-]\s*)?(?:direcciones? de origen y destino|lista de art[ií]culos|fecha del flete(?: o mudanza)?|escaleras?|distancia de carga|acarreo|embalaje)\s*:/im.test(text)
+  return /^\s*(?:[-•]\s*)?(?:[1-6]\s*[).:-]\s*)?(?:direcciones? de origen y destino|lista de art[ií]culos|fecha del flete(?: o mudanza)?|acceso por ascensor o escalera|escaleras?|distancia de carga|acarreo|embalaje)\s*:/im.test(text)
 }
 
 /** También acepta el mensaje de pendientes que el usuario copió entero. */
 export function isOnlyTommyServiceAnswers(text: string): boolean {
   const d = tommyDifferentialResult(text)
   return d.copiedForm && d.answers.length > 0 && !d.freeText &&
-    d.answers.every(answer => ['escaleras', 'acarreo', 'embalaje'].includes(answer.field))
+    d.answers.every(answer => ['escaleras', 'acarreo', 'embalaje'].includes(answer.field)) &&
+    !d.answers.some(answer => answer.field === 'escaleras' && /ascensor/i.test(answer.value))
 }

@@ -33,7 +33,7 @@ const labelField = (text: string): DiffField | null => {
   if (/^direc|^origen y destino/.test(t)) return 'direcciones'
   if (/^lista de art|^inventario|^articulos? a trasladar/.test(t)) return 'articulos'
   if (/^fecha/.test(t)) return 'fecha'
-  if (/^escale|^escalera/.test(t)) return 'escaleras'
+  if (/^escale|^escalera|^acceso \(?(?:por )?ascensor|^ascensor/.test(t)) return 'escaleras'
   if (/^distancia de carga|^acarreo/.test(t)) return 'acarreo'
   if (/^embalaje|^embalar/.test(t)) return 'embalaje'
   return null
@@ -54,7 +54,7 @@ function segmentLine(line: string): Segment | null {
 function segmentMessage(message: string): { segments: Segment[]; loose: string[] } {
   const segments: Segment[] = []; const loose: string[] = []
   // WhatsApp puede juntar todo el formulario en una sola línea al pegarlo.
-  const unfolded = message.replace(/\r/g, '').replace(/\s+([1-6])\s*\)\s*(?=(?:direc|lista|fecha|escal|distancia|acarreo|embalaje))/gi, '\n$1) ')
+  const unfolded = message.replace(/\r/g, '').replace(/\s+([1-6])\s*\)\s*(?=(?:direc|lista|fecha|escal|acceso|distancia|acarreo|embalaje))/gi, '\n$1) ')
   for (const line of unfolded.split('\n')) {
     const seg = segmentLine(line)
     if (seg) segments.push(seg)
