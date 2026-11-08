@@ -158,8 +158,8 @@ export async function parseGeneralWhatsAppTurn(section: number, state: QuoteSess
     input: [{ role: 'user', content: text }],
     schemaName: 'whatsapp_quote_patch',
     schema: patchSchema,
-    reasoningEffort: 'none',
-    maxOutputTokens: 1600,
+    reasoningEffort: 'medium',
+    maxOutputTokens: 6000,
   })
 
   const next: QuoteSessionState = JSON.parse(JSON.stringify(state))
@@ -332,8 +332,8 @@ export async function parseWhatsAppInventory(text: string, imageDataUrl?: string
     input: [{ role: 'user', content }],
     schemaName: 'whatsapp_inventory_parser',
     schema: inventorySchema,
-    reasoningEffort: 'none',
-    maxOutputTokens: 900,
+    reasoningEffort: 'medium',
+    maxOutputTokens: 4000,
   })
 
   const validItems = data.items.filter((item) => {

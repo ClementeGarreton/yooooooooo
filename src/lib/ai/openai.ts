@@ -5,7 +5,7 @@ interface StructuredResponseOptions {
   input: unknown
   schemaName: string
   schema: Record<string, unknown>
-  reasoningEffort?: 'none' | 'low' | 'medium'
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   maxOutputTokens?: number
 }
 
@@ -41,15 +41,23 @@ function estimateCost(model: string, inputTokens: number, outputTokens: number):
   let outputRate = Number.isFinite(overrideOutput) && overrideOutput >= 0 ? overrideOutput : 0
 
   if (!(inputRate || outputRate)) {
-    if (model.includes('luna')) {
+    // Tarifas estándar por millón de tokens, sin descuento por caché.
+    // Los tokens de razonamiento están incluidos en output_tokens.
+    if (model === 'gpt-6.1-terra') {
+      inputRate = 1
+      outputRate = 5
+    } else if (model === 'gpt-6-luna') {
+      inputRate = 0.1
+      outputRate = 0.5
+    } else if (model === 'gpt-5.6-luna') {
       inputRate = 0.2
       outputRate = 1.2
-    } else if (model.includes('terra')) {
+    } else if (model === 'gpt-5.6-terra') {
       inputRate = 2
       outputRate = 12
-    } else if (model.includes('sol') || model === 'gpt-5.6') {
-      inputRate = 4
-      outputRate = 20
+    } else if (model === 'gpt-6.1-sol') {
+      inputRate = 2
+      outputRate = 10
     }
   }
 
@@ -61,7 +69,7 @@ async function requestStructuredResponse<T>({
   input,
   schemaName,
   schema,
-  reasoningEffort = 'low',
+  reasoningEffort = 'medium',
   maxOutputTokens = 1200,
 }: StructuredResponseOptions): Promise<{ data: T; usage: AiUsage }> {
   const apiKey = process.env.OPENAI_API_KEY
@@ -69,7 +77,13 @@ async function requestStructuredResponse<T>({
     throw new Error('OPENAI_API_KEY no está configurada')
   }
 
-  const model = process.env.OPENAI_MODEL || 'gpt-5.6-luna'
+  const model = process.env.OPENAI_MODEL || 'gpt-6.1-terra'
+  // Permite subir a high desde Vercel sin modificar código, si las pruebas lo justifican.
+  const configuredEffort = process.env.OPENAI_REASONING_EFFORT
+  const allowedEfforts = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+  const effectiveEffort = allowedEfforts.some((value) => value === configuredEffort)
+    ? configuredEffort
+    : reasoningEffort
   const response = await fetch(OPENAI_API_URL, {
     method: 'POST',
     headers: {
@@ -79,7 +93,7 @@ async function requestStructuredResponse<T>({
     body: JSON.stringify({
       model,
       store: false,
-      reasoning: { effort: reasoningEffort },
+      reasoning: { effort: effectiveEffort },
       instructions,
       input,
       max_output_tokens: maxOutputTokens,
