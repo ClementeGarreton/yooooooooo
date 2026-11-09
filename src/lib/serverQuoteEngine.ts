@@ -269,7 +269,7 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
   }
 
   // Pie estable en todas las páginas, sin tapar el desglose.
-  const pages = pdf.getNumberOfPages()
+  const pages = pdf.internal.getNumberOfPages()
   for (let i = 1; i <= pages; i++) {
     pdf.setPage(i)
     pdf.setDrawColor(225, 225, 225)
