@@ -7,6 +7,8 @@ interface StructuredResponseOptions {
   schema: Record<string, unknown>
   reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   maxOutputTokens?: number
+  model?: string
+  ignoreGlobalReasoningEffort?: boolean
 }
 
 export interface AiUsage {
@@ -71,17 +73,19 @@ async function requestStructuredResponse<T>({
   schema,
   reasoningEffort = 'medium',
   maxOutputTokens = 1200,
+  model: modelOverride,
+  ignoreGlobalReasoningEffort = false,
 }: StructuredResponseOptions): Promise<{ data: T; usage: AiUsage }> {
   const apiKey = process.env.OPENAI_API_KEY
   if (!apiKey) {
     throw new Error('OPENAI_API_KEY no está configurada')
   }
 
-  const model = process.env.OPENAI_MODEL || 'gpt-6.1-terra'
+  const model = modelOverride || process.env.OPENAI_MODEL || 'gpt-6.1-terra'
   // Permite subir a high desde Vercel sin modificar código, si las pruebas lo justifican.
   const configuredEffort = process.env.OPENAI_REASONING_EFFORT
   const allowedEfforts = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const
-  const effectiveEffort = allowedEfforts.some((value) => value === configuredEffort)
+  const effectiveEffort = !ignoreGlobalReasoningEffort && allowedEfforts.some((value) => value === configuredEffort)
     ? configuredEffort
     : reasoningEffort
   const response = await fetch(OPENAI_API_URL, {

@@ -54,8 +54,8 @@ test('el recordatorio separa preguntas de acceso y admite formularios anteriores
   const st=state()
   const base=tommyPendingMessage(st)
   assert.equal((base.match(/4\.[1-4]\)/g)||[]).length,4)
-  assert.match(base,/4\.1\) ¿Hay ascensor/)
-  assert.match(base,/4\.2\) ¿Hay ascensor/)
+  assert.match(base,/4\.1\) ¿Ascensor/)
+  assert.match(base,/4\.2\) ¿Ascensor/)
   // Compatibilidad retrospectiva con el formulario anterior de tres rótulos.
   const legacy = '- Escaleras: artículos, pisos y si corresponde a origen, destino o ambos (o indica No) | Respuesta: no\n- Distancia de carga: ¿hay que caminar un tramo largo desde el camión? (Sí/No) | Respuesta: no\n- Embalaje: ¿qué artículos debemos embalar? (o indica No) | Respuesta: dos computadores antiguos'
   const d=tommyDifferentialResult(legacy,st)

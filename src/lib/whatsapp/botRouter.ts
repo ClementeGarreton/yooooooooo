@@ -69,7 +69,8 @@ export function isQuoteExpired(state: WhatsAppBotState, now = Date.now()): boole
  * permanece el silencio, salvo que el cliente escriba un comando explícito.
  */
 export function decideBotAction(text: string, state: WhatsAppBotState | null, now = Date.now()): BotDecision {
-  const command = botCommand(text)
+  // Dentro de la cotización, «1», «2» o «3» son respuestas, no órdenes del menú.
+  const command = state?.mode === 'quoting' && /^\s*[123]\)?\s*$/.test(text) ? null : botCommand(text)
   if (!state?.greeted_at) return 'welcome'
   // Los controles explícitos siguen disponibles incluso tras una expiración.
   if (command === 'SALIR') return 'exit'
@@ -81,10 +82,11 @@ export function decideBotAction(text: string, state: WhatsAppBotState | null, no
   // Un mensaje a una cotización ya caducada NO puede reactivar la IA.
   if (state?.mode === 'quoting' && isQuoteExpired(state, now)) return 'expire_silent'
 
+  // Tras la bienvenida, un mensaje libre como «necesito mudar 2 camas»
+  // inicia cotización sin obligar al cliente a escribir COTIZAR.
   if (state.mode === 'idle') {
     if (isGreeting(text)) return 'welcome'
-    const last = state.last_activity_at ? Date.parse(state.last_activity_at) : NaN
-    if (!Number.isFinite(last) || now - last >= MENU_IDLE_RESET_MS) return 'welcome'
+    return 'start_quote'
   }
 
   if (state.mode === 'quoting') return 'quote_message'

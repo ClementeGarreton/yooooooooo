@@ -56,6 +56,8 @@ function segmentMessage(message: string): { segments: Segment[]; loose: string[]
   // WhatsApp puede juntar todo el formulario en una sola línea al pegarlo.
   const unfolded = message.replace(/\r/g, '').replace(/\s+([1-6])\s*\)\s*(?=(?:direc|lista|fecha|escal|distancia|acarreo|embalaje))/gi, '\n$1) ')
   for (const line of unfolded.split('\n')) {
+    // 4.1–4.7 son preguntas independientes. Nunca interpretarlas como «4) Escaleras».
+    if (/^\s*(?:[-•*]\s*)?4\.[1-7]\s*[).:-]/.test(line)) continue
     const seg = segmentLine(line)
     if (seg) segments.push(seg)
     else if (line.trim()) loose.push(line.trim())

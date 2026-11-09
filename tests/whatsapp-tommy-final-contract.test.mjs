@@ -56,8 +56,8 @@ test('ningún dato del cliente: faltan los seis, no 17 preguntas',()=>{
   const missing=tommyMissing(state())
   assert.deepEqual(missing,['direcciones','articulos','fecha','escaleras','acarreo','embalaje'])
   const text=tommyPendingMessage(state())
-  assert.equal((text.match(/^-/gm) || []).length,6)
-  assert.match(text,/solo nos falta/)
+  assert.equal((text.match(/\| Respuesta:/g) || []).length,6)
+  assert.match(text,/Solo falta/i)
   assert.doesNotMatch(text,/nombre completo|boleta|RUT/i)
 })
 
@@ -87,7 +87,8 @@ test('un bloque de tres respuestas negativas se conserva completo',()=>{
 test('un SÍ en escaleras necesita artículos, pisos y lado',()=>{
   const s=applyTommyAnswers(fill(state()),'4) Escaleras: Sí\n5) Distancia de carga: No\n6) Embalaje: No')
   assert.deepEqual(tommyMissing(s),['escaleras'])
-  assert.equal((tommyPendingMessage(s).match(/^-/gm) || []).length,1)
+  assert.match(tommyPendingMessage(s), /4\.1\)/)
+  assert.match(tommyPendingMessage(s), /4\.4\)/)
   const s2=applyTommyAnswers(s,'4) Escaleras: Cama al destino hasta el 3er piso')
   assert.deepEqual(tommyMissing(s2),[])
 })
@@ -113,7 +114,7 @@ test('solo se piden los campos pendientes, no los ya entregados',()=>{
   const completed=applyTommyAnswers(s,'4) Escaleras: No\n5) Distancia de carga: No\n6) Embalaje: No')
   assert.deepEqual(tommyMissing(completed),['direcciones'])
   const prompt=tommyPendingMessage(completed)
-  assert.equal((prompt.match(/^-/gm) || []).length,1)
+  assert.equal((prompt.match(/\| Respuesta:/g) || []).length,1)
   assert.doesNotMatch(prompt,/^- Lista de artículos/m)
 })
 

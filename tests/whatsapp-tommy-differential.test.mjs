@@ -64,7 +64,7 @@ test('pendientes separados: sí/no por número, sin atribuir respuestas de ascen
     .replace(/(4\.2\)[^\n]*?\| Respuesta:)/,'$1 No')
     .replace(/(4\.3\)[^\n]*?\| Respuesta:)/,'$1 No')
     .replace(/(4\.4\)[^\n]*?\| Respuesta:)/,'$1 No')
-    .replace(/(Distancia de carga:[^\n]*?\| Respuesta:)/,'$1 no')
+    .replace(/((?:Acarreo|Distancia de carga):[^\n]*?\| Respuesta:)/,'$1 no')
     .replace(/(Embalaje:[^\n]*?\| Respuesta:)/,'$1 mis dos maceteros pintados')
   const nonAccess=reply.split('\n').filter(line=>!/^\s*4\.[1-7]\)/.test(line)).join('\n')
   const d=tommyDifferentialResult(nonAccess,st)

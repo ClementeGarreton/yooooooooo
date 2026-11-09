@@ -1,3 +1,4 @@
+import { parseRawCustomerQuote, mergeRawQuote, rawQuoteGaps, nextShortQuestion } from '@/lib/whatsapp/rawNlpQuote'
 import { messageContext, conversationKey, customerPhone,
   downloadChannelImage as downloadWhatsAppMediaAsDataUrl,
   sendChannelDocument as sendWhatsAppDocument,
@@ -30,7 +31,7 @@ import {
 import { generateQuoteFromSession, generatePreliminaryWhatsAppQuote } from '@/lib/serverQuoteEngine'
 // La tabla handoff_requests aún no existe en producción.
 // import { createHandoffRequest, collectHandoffDetails, setPendingHandoffReason } from '@/lib/whatsapp/handoffRequests'
-import { TOMMY_QUOTE_START, TOMMY_FOLLOWUP, TOMMY_EXECUTIVE, tommyMissing, tommyPendingMessage, applyTommyAnswers, isTommyFormReply, isOnlyTommyServiceAnswers, tommyAnswerOnlyForAI, tommyDifferentialResult } from '@/lib/whatsapp/tommyFlow'
+import { TOMMY_QUOTE_START, TOMMY_FOLLOWUP, TOMMY_EXECUTIVE, tommyMissing, tommyPendingMessage, applyTommyAnswers, isTommyFormReply, isOnlyTommyServiceAnswers, tommyAnswerOnlyForAI, tommyDifferentialResult, normalizeTommyNumberedReply } from '@/lib/whatsapp/tommyFlow'
 import { applyAccessForm, isTommyAccessReply } from '@/lib/whatsapp/tommyAccess'
 import { saveQuotePhoto } from '@/lib/whatsapp/photoStorage'
 import { canCloseInventory, isInventoryAddition, upsertInventoryPhoto } from '@/lib/whatsapp/inventoryResolution'
@@ -349,131 +350,55 @@ async function finishTommyQuote(session: QuoteSessionRow, conversationId: string
   }
 }
 
-/** Mensaje libre con los seis grupos de Tommy: parsear todo a la vez, no pedir 17 campos. */
+/** Flujo simple de Tommy: WhatsApp crudo -> OpenAI (UNA llamada) -> estado persistente -> PDF.
+ * Los parsers antiguos quedan fuera de esta ruta; no imponemos formularios ni un segundo análisis.
+ */
 async function processTommyQuoteTurn(
-  session: QuoteSessionRow,
-  conversationId: string,
-  to: string,
+  session: QuoteSessionRow, conversationId: string, to: string,
   message: ReturnType<typeof extractMessages>[number],
 ) {
   const text = message.text.trim()
-  if (message.type === 'image') {
-    // Reutilizar análisis fotográfico existente; su respuesta ahora usa los seis grupos.
-    await processFreeformQuoteTurn(session, conversationId, to, message)
+  if (!text) {
+    await sendAndLog(conversationId, to, 'Envíame tu solicitud de mudanza por escrito, con los datos que conozcas. 😊')
     return
   }
-  if (!text || /^hola[!.\s]*$/i.test(text)) {
-    await sendAndLog(conversationId, to, tommyPendingMessage(session.state) || TOMMY_QUOTE_START)
+  if (/^(confirmar|confirmo|pdf)[.!\s]*$/i.test(text)) {
+    await finishTommyQuote(session, conversationId, to)
     return
   }
-  if (/^(ficha|resumen|ver ficha)[.!\s]*$/i.test(text)) {
+  if (/^(ficha|resumen)[.!\s]*$/i.test(text)) {
     await sendFreeformReview(session, conversationId, to)
     return
   }
-  if (/^(confirmar|confirmo)[.!\s]*$/i.test(text)) {
+  let parsed
+  try {
+    parsed = await parseRawCustomerQuote(session.state, text)
+  } catch (error) {
+    console.error('[WhatsApp][NLP] Falló la llamada OpenAI, no el español del cliente:', error)
+    // No inventar que se entendió, no borrar el progreso ni repetir los mismos datos.
+    await sendAndLog(conversationId, to, 'Hubo un problema técnico al procesar tu mensaje. Tus datos anteriores siguen guardados; puedes reenviar solo este último mensaje.')
+    return
+  }
+  let newState = mergeRawQuote(session.state, parsed.data)
+  newState.intake!.nlpLastRaw = text
+  // ÚNICA persistencia de la interpretación.
+  session = await saveQuoteSession(session.id, newState)
+  await addUsage(conversationId, parsed.usage).catch(error => console.warn('[WhatsApp][NLP] Telemetría:', error))
+  const gaps = rawQuoteGaps(session.state)
+  console.info('[WhatsApp][NLP] Campos pendientes:', gaps, 'quote_session:', session.id)
+  if (!gaps.length) {
     await finishTommyQuote(session, conversationId, to)
     return
   }
-  if (session.state.intake?.tommySubmittedAt) {
-    // Una nueva corrección no debe sobrescribir el expediente sin auditabilidad.
-    session = await saveQuoteSession(session.id, {
-      ...session.state,
-      intake: { ...session.state.intake, tommySubmittedAt: undefined },
-    })
-  }
-  let nextState = session.state
-  // Respuestas 4.1–4.7: cada Sí/No se interpreta por su número,
-  // nunca como una confirmación para varias preguntas a la vez.
-  if (isTommyAccessReply(text)) {
-    nextState = applyAccessForm(nextState, text)
-    // En un mismo copiado pueden venir respuestas a «acarreo» y «embalaje».
-    // Excluir las subpreguntas 4.x para que el parser antiguo no convierta
-    // los «Sí» de ascensor en una respuesta genérica sobre escaleras.
-    const otherAnswers = text.split(/\r?\n/)
-      .filter(line => !/^\s*(?:[-•]\s*)?4\.[1-7]\s*[).:-]/.test(line))
-      .join('\n')
-    nextState = applyTommyAnswers(nextState, otherAnswers)
-    if (nextState.intake) nextState.intake.stage = 'review'
-    session = await saveQuoteSession(session.id, nextState)
-    await finishTommyQuote(session, conversationId, to)
+  // Máximo tres mensajes de recopilación: el inicial + dos aclaraciones.
+  const questions = session.state.intake?.nlpQuestionCount ?? 0
+  if (questions >= 3) {
+    await sendAndLog(conversationId, to, 'Guardé lo que me contaste. Aún no puedo calcular un precio confiable con la información disponible. Puedes completar los datos faltantes cuando quieras; no perderás el avance.')
     return
   }
-  // No asignar un número/comuna a origen o destino cuando el cliente no lo especificó.
-  const ambiguity = ambiguousGroupedReply(session.state, text)
-  if (ambiguity) { await sendAndLog(conversationId, to, ambiguity); return }
-  if (isOnlyTommyServiceAnswers(text)) {
-    nextState = applyTommyAnswers(nextState, text)
-    if (nextState.intake) nextState.intake.stage = 'review'
-    session = await saveQuoteSession(session.id, nextState)
-    await finishTommyQuote(session, conversationId, to)
-    return
-  }
-  // Formulario copiado: comparar PRIMERO con el original y no enviar la pregunta
-  // entera a la IA si el cliente no añadió ninguna respuesta interpretable.
-  const differential = tommyDifferentialResult(text, nextState)
-  const onlyChanges = tommyAnswerOnlyForAI(text, nextState)
-  if (differential.conflicted.length) {
-    await sendAndLog(conversationId, to,
-      `Veo respuestas distintas para ${differential.conflicted.join(', ')}. ¿Cuál es la correcta?`)
-    return
-  }
-  if (differential.copiedForm && !onlyChanges) {
-    await sendAndLog(conversationId, to, 'No encontré respuestas nuevas. Puedes editar el mensaje anterior y reenviarlo.')
-    return
-  }
-  // Las etiquetas individuales siguen admitiendo correcciones cuando corresponden.
-  const labels = (differential.copiedForm || isTommyFormReply(text))
-    ? { recognized: false, errors: [] as string[], state: nextState, inventory: null }
-    : applyLabelEdits(nextState, text)
-  if (labels.recognized && !labels.errors.length && !isContractClauseReply(text)) {
-    nextState = labels.state
-    if (labels.inventory) {
-      const inventory = await parseWhatsAppInventory(labels.inventory.description)
-      await addUsage(conversationId, inventory.usage)
-      if (inventory.statePatch.items.length && !inventory.statePatch.pendingInventory.length) {
-        nextState = labels.inventory.mode === 'replace'
-          ? { ...nextState, items: inventory.statePatch.items, pendingInventory: [], inventoryCollectionDone: true }
-          : mergeInventory(nextState, inventory.statePatch)
-      } else {
-        await sendAndLog(conversationId, to, 'No pude identificar todos los artículos. Escribe la lista con cantidades.')
-        return
-      }
-    }
-  } else {
-    if (labels.errors.length) {
-      await sendAndLog(conversationId, to, `Revisa estos datos: ${labels.errors.join('; ')}`)
-      return
-    }
-    try {
-      const parsed = await parseGeneralWhatsAppTurn(0, nextState, onlyChanges || text)
-      await addUsage(conversationId, parsed.usage)
-      nextState = parsed.state
-      const patch = parsed.patch
-      nextState = markServiceAnswers(nextState, INTAKE_SERVICES.filter(key => patch[key] !== null))
-      if (patch.inventoryDescription?.trim()) {
-        const inventory = await parseWhatsAppInventory(patch.inventoryDescription)
-        await addUsage(conversationId, inventory.usage)
-        if (inventory.statePatch.items.length || inventory.statePatch.pendingInventory.length) {
-          nextState = mergeInventory(nextState, inventory.statePatch)
-          nextState.inventoryCollectionDone = true
-        }
-      }
-    } catch (error) {
-      // Recuperar lo explícito, guardar y CONTINUAR sin handoff_requests.
-      console.error('[WhatsApp][Tommy] Falló interpretación de IA; conservamos respuestas:', error)
-      const recovered = applyTommyAnswers(nextState, text)
-      if (recovered.intake) recovered.intake.stage = 'review'
-      session = await saveQuoteSession(session.id, recovered)
-      await finishTommyQuote(session, conversationId, to)
-      return
-    }
-  }
-  nextState = applyTommyAnswers(nextState, text)
-  if (nextState.intake) nextState.intake.stage = 'review'
-  nextState.confirmed = false
-  session = await saveQuoteSession(session.id, nextState)
-  await logAction({ conversationId, action: 'tommy_six_groups_updated', payload: { messageId: message.id, missing: tommyMissing(session.state) } })
-  await finishTommyQuote(session, conversationId, to)
+  newState = { ...session.state, intake: { ...session.state.intake!, nlpQuestionCount: questions + 1 } }
+  session = await saveQuoteSession(session.id, newState)
+  await sendAndLog(conversationId, to, nextShortQuestion(session.state))
 }
 
 /** El cliente puede responder en un párrafo, un bloque de variables o una fotografía. */
@@ -738,10 +663,21 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
     await moveIncomingToConversation(message.id, conversationId)
     const resumed = Date.now() - Date.parse(session.created_at) > 10_000
     if (session.state.intake?.tommyVersion === 1) {
-      const message = resumed
-        ? (tommyPendingMessage(session.state) || 'Tu solicitud ya quedó registrada. Puedes enviar alguna corrección o escribir *MENÚ*.')
+      // El cliente respondió al menú directamente en español natural: procesar YA.
+      // Evita la pantalla extra que antes descartaba ese primer mensaje.
+      if (!botCommand(message.text) && message.text.trim()) {
+        await processTommyQuoteTurn(session, conversationId, to, message)
+        return
+      }
+      if (!resumed && (session.state.intake.nlpQuestionCount || 0) === 0) {
+        session = await saveQuoteSession(session.id, {
+          ...session.state, intake: { ...session.state.intake, nlpQuestionCount: 1 },
+        })
+      }
+      const prompt = resumed
+        ? (rawQuoteGaps(session.state).length ? 'Retomamos tu cotización. Puedes escribir los datos pendientes en lenguaje natural. 😊' : 'Tu cotización está completa; escribe CONFIRMAR para obtener el PDF.')
         : TOMMY_QUOTE_START
-      await sendAndLog(conversationId, to, message)
+      await sendAndLog(conversationId, to, prompt)
     } else if (resumed && session.state.intake?.stage === 'review') {
       await sendFreeformReview(session, conversationId, to, 'Retomamos tu cotización donde quedó.', 'next')
     } else {

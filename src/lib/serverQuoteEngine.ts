@@ -93,10 +93,13 @@ export async function calculateSessionQuote(state: QuoteSessionState) {
   // del cotizador web. Así una cotización por WhatsApp da el mismo valor que en la web y
   // sigue cualquier cambio que se haga en Configuración → Precios.
   const [pricing, totalDistance] = await Promise.all([readPricingConfig(), calculateDistance(state)])
+  // «No se usarán escaleras» no implica «hay ascensor», pero sí significa
+  // que NO corresponde cobrar un recargo por escaleras en esta cotización preliminar.
+  const noStairCarry = state.intake?.tommyVersion === 1 && state.intake.tommyDetails?.escaleras === 'No'
   const result = calculateQuote({
     items,
-    origin: { floor: state.origin.details.floor ?? undefined, hasElevator: state.origin.details.hasElevator ?? undefined },
-    destination: { floor: state.destination.details.floor ?? undefined, hasElevator: state.destination.details.hasElevator ?? undefined },
+    origin: { floor: noStairCarry ? 0 : state.origin.details.floor ?? undefined, hasElevator: state.origin.details.hasElevator ?? undefined },
+    destination: { floor: noStairCarry ? 0 : state.destination.details.floor ?? undefined, hasElevator: state.destination.details.hasElevator ?? undefined },
     distanceKm: totalDistance,
     dateTime: state.schedule.date && state.schedule.time ? `${state.schedule.date}T${state.schedule.time}:00` : null,
     isFlexible: state.schedule.isFlexible,

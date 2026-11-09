@@ -22,10 +22,10 @@ const withAnswers=(st, answers) => {
 }
 test('preguntas distintas para ascensor origen/destino y escaleras origen/destino',()=> {
   const prompt=tommyPendingMessage(state())
-  assert.match(prompt,/4\.1\) ¿Hay ascensor utilizable para los muebles en el origen\?/)
-  assert.match(prompt,/4\.2\) ¿Hay ascensor utilizable para los muebles en el destino\?/)
-  assert.match(prompt,/4\.3\) ¿Hay que mover muebles por escaleras en el origen\?/)
-  assert.match(prompt,/4\.4\) ¿Hay que mover muebles por escaleras en el destino\?/)
+  assert.match(prompt,/4\.1\) ¿Ascensor en origen\?/)
+  assert.match(prompt,/4\.2\) ¿Ascensor en destino\?/)
+  assert.match(prompt,/4\.3\) ¿Se usarán escaleras en origen\?/)
+  assert.match(prompt,/4\.4\) ¿Se usarán escaleras en destino\?/)
   assert.doesNotMatch(prompt,/¿Hay ascensor.*destino.*escaleras\?/)
 })
 test('si copian el formulario sin respuestas ningún campo se da por contestado',()=> {
@@ -74,7 +74,7 @@ test('respuesta ambigua no se interpreta como respuesta binaria',()=> {
 })
 test('el procesador atiende preguntas atómicas ANTES del detector de formulario antiguo',()=> {
   const src=readFileSync(new URL('../src/lib/whatsapp/incomingProcessor.ts',import.meta.url),'utf8')
-  const index=src.indexOf('if (isTommyAccessReply(text))')
+  const index=src.indexOf('if (isTommyAccessReply(text, nextState))')
   assert.ok(index>0 && index < src.indexOf('if (isOnlyTommyServiceAnswers(text))'))
   assert.ok(index < src.indexOf('const differential = tommyDifferentialResult(text, nextState)'))
 })
@@ -85,7 +85,7 @@ test('una sola copia puede responder accesos, acarreo y embalaje sin perder resp
     .replace(/(4\.2\)[^\n]*?\| Respuesta:)/,'$1 Sí')
     .replace(/(4\.3\)[^\n]*?\| Respuesta:)/,'$1 No')
     .replace(/(4\.4\)[^\n]*?\| Respuesta:)/,'$1 No')
-    .replace(/(Distancia de carga:[^\n]*?\| Respuesta:)/,'$1 No')
+    .replace(/((?:Acarreo|Distancia de carga):[^\n]*?\| Respuesta:)/,'$1 No')
     .replace(/(Embalaje:[^\n]*?\| Respuesta:)/,'$1 Dos escritorios')
   const s1=applyAccessForm(st,composite)
   const onlyOther=composite.split('\n').filter(line=>!/^\s*(?:[-•]\s*)?4\.[1-7]\s*[).:-]/.test(line)).join('\n')

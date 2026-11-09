@@ -4,7 +4,7 @@
  */
 import type { QuoteSessionState } from '../quoteSession'
 import { extractTommyDifferential, type DiffField } from './tommyDifferential.ts'
-import { accessPendingLines } from './tommyAccess.ts'
+import { accessPendingLines, unansweredAccess } from './tommyAccess.ts'
 
 export type TommyAnswer = 'escaleras' | 'acarreo' | 'embalaje'
 export const TOMMY_SIX = ['direcciones', 'articulos', 'fecha', 'escaleras', 'acarreo', 'embalaje'] as const
@@ -49,13 +49,35 @@ export const TOMMY_EXECUTIVE = [
   'Un ejecutivo te contactará a la brevedad.',
 ].join('\n')
 
+/** Permite «5: 50mts» o «6 no» sin copiar el formulario. */
+export function normalizeTommyNumberedReply(text: string): string {
+  const headings = [
+    'Direcciones de origen y destino', 'Lista de artículos a trasladar',
+    'Fecha del flete o mudanza', 'Escaleras', 'Distancia de carga', 'Embalaje',
+  ] as const
+  return text.split('\n').map(line => {
+    // Las subpreguntas 4.1–4.7 pertenecen a OTRO formulario; no renumerarlas.
+    if (/^\s*4\.[1-7](?=\s|[).:])/.test(line)) return line
+    const match = /^(\s*)([1-6])\s*(?:[):]|[.](?!\d)|\s)\s*(.+)$/.exec(line)
+    if (!match) return line
+    const [, space, number, body] = match
+    const idx = Number(number) - 1
+    const value = body.trim()
+    if (!value || value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+      .startsWith(headings[idx].normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase())) return line
+    // «1 Sí, 2 No...» es una respuesta de acceso, NO una dirección.
+    if (/^s[ií]\b|^no\b/i.test(value) && /[,;]\s*[2-4]\s*(?:[).:]|\s)\s*(?:s[ií]|no)/i.test(value)) return line
+    return `${space}${number}) ${headings[idx]}: ${value}`
+  }).join('\n')
+}
+
 const labels: Record<TommyField, string> = {
-  direcciones: 'Direcciones de origen y destino (calle, número y comuna; departamento si corresponde)',
-  articulos: 'Lista de artículos con cantidades',
-  fecha: 'Fecha del flete o mudanza',
-  escaleras: 'Escaleras: artículos, pisos y si corresponde a origen, destino o ambos (o indica No)',
-  acarreo: 'Distancia de carga: ¿hay que caminar un tramo largo desde el camión? (Sí/No)',
-  embalaje: 'Embalaje: ¿qué artículos debemos embalar? (o indica No)',
+  direcciones: '1) Direcciones de origen y destino',
+  articulos: '2) Muebles y cantidades',
+  fecha: '3) Fecha de mudanza',
+  escaleras: '4) Escaleras: dónde, cuántos pisos y qué muebles (o NO)',
+  acarreo: '5) Acarreo: metros desde el camión (o NO)',
+  embalaje: '6) Embalaje: qué artículos (o NO)',
 }
 
 export function tommyMissing(state: QuoteSessionState): TommyField[] {
@@ -78,19 +100,32 @@ export function tommyPendingMessage(state: QuoteSessionState): string | null {
   const missing = tommyMissing(state)
   if (!missing.length) return null
   const lines: string[] = []
+  // La primera tanda tiene SEIS temas, no nueve subpreguntas.
+  // Solo tras recibir dirección, inventario y fecha se aclaran los accesos.
+  const firstRound = missing.some(name => ['direcciones', 'articulos', 'fecha'].includes(name))
   for (const name of missing) {
     if (name === 'escaleras') {
-      lines.push('- Acceso por ascensor o escalera:')
-      lines.push(...accessPendingLines(state.intake?.tommyAccess))
+      if (firstRound) lines.push(`${labels.escaleras} | Respuesta:`)
+      else {
+        lines.push('Accesos:')
+        lines.push(...accessPendingLines(state.intake?.tommyAccess))
+      }
     } else {
-      lines.push(`- ${labels[name]} | Respuesta:`)
+      lines.push(`${labels[name]} | Respuesta:`)
     }
   }
+  const outstandingAccess = !firstRound && missing.includes('escaleras')
+    ? unansweredAccess(state.intake?.tommyAccess || {}) : []
+  const example = outstandingAccess.length
+    ? outstandingAccess.slice(0, 2).map(q => `4.${q.id} ${q.kind === 'binary' ? 'sí/no' : q.kind === 'floors' ? '1' : 'TODOS'}`).join('; ')
+    : missing.includes('acarreo') ? '5: 50mts' : undefined
+  const hint = example
+    ? `Responde por número (ej.: ${example}) o copia y completa «Respuesta:».`
+    : 'Responde por número o copia y completa «Respuesta:».'
   return [
-    '¡Gracias por la información! 🙌 Para enviarte el presupuesto solo nos falta:',
-    '', ...lines, '',
-    'Copia este mensaje y completa cada «Respuesta:» por separado.',
-    'Apenas nos respondas, te enviamos tu cotización 🚚',
+    '¡Gracias! 🙌 Solo falta:',
+    ...lines,
+    hint,
   ].join('\n')
 }
 
@@ -102,6 +137,12 @@ const affirmative = (value: string) => /^(si\b|hay\b|necesito\b|se requiere\b|co
 // Incluir la referencia original y TODOS los rótulos de pendientes. No depender
 // de que el cliente copie precisamente la última plantilla: puede contestar un
 // mensaje anterior después de haber cerrado otras preguntas.
+const TOMMY_LEGACY_PENDING_REFERENCE = [
+  '- Escaleras: artículos, pisos y si corresponde a origen, destino o ambos (o indica No)',
+  '- Distancia de carga: ¿hay que caminar un tramo largo desde el camión? (Sí/No)',
+  '- Embalaje: ¿qué artículos debemos embalar? (o indica No)',
+].join('\n')
+
 export const TOMMY_PENDING_REFERENCE = [
   '- ' + labels.direcciones,
   '- ' + labels.articulos,
@@ -112,7 +153,7 @@ export const TOMMY_PENDING_REFERENCE = [
 ].join('\n')
 
 function references(state?: QuoteSessionState): string[] {
-  return [TOMMY_QUOTE_START, TOMMY_PENDING_REFERENCE, ...(state ? [tommyPendingMessage(state) || ''] : [])]
+  return [TOMMY_QUOTE_START, TOMMY_PENDING_REFERENCE, TOMMY_LEGACY_PENDING_REFERENCE, ...(state ? [tommyPendingMessage(state) || ''] : [])]
 }
 
 /** Solo el delta, nunca las preguntas que el cliente copió literalmente. */
@@ -121,7 +162,7 @@ export function tommyDifferentialResult(message: string, state?: QuoteSessionSta
 }
 
 export function tommyAnswerOnlyForAI(message: string, state?: QuoteSessionState): string {
-  const diff = tommyDifferentialResult(message, state)
+  const diff = tommyDifferentialResult(normalizeTommyNumberedReply(message), state)
   if (!diff.copiedForm) return message.trim()
   const aiLabels: Record<DiffField, string> = {
     direcciones: 'Direcciones origen y destino', articulos: 'Artículos para trasladar',
@@ -142,7 +183,7 @@ export function applyTommyAnswers(state: QuoteSessionState, message: string): Qu
   const next = structuredClone(state)
   const answered = new Set(next.intake!.tommyAnswers || [])
   const details = { ...(next.intake!.tommyDetails || {}) }
-  const raw = message.trim()
+  const raw = normalizeTommyNumberedReply(message.trim())
   const diff = tommyDifferentialResult(raw, state)
   // Dos respuestas distintas en el mismo mensaje invalidan solo ese campo.
   // No borrar respuestas anteriores por copiar una pregunta sin contestarla.
@@ -176,7 +217,7 @@ export function applyTommyAnswers(state: QuoteSessionState, message: string): Qu
     if (key === 'acarreo') {
       // Tommy pidió aclarar en cuál inmueble hay acarreo cuando es afirmativo.
       const informative = /\b(origen|destino|ambos)\b/i.test(value) ||
-        /\b\d+(?:[.,]\d+)?\s*(?:metros?|m)\b/i.test(value)
+        /\b\d+(?:[.,]\d+)?\s*(?:metros?|mts?|m)\b/i.test(value)
       if (isNo || informative) { answered.add(key); details.acarreo = value }
       else { answered.delete(key); delete details.acarreo }
     }
