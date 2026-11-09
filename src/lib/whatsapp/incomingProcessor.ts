@@ -1,4 +1,4 @@
-import { parseRawCustomerQuote, mergeRawQuote, rawQuoteGaps, nextShortQuestion } from '@/lib/whatsapp/rawNlpQuote'
+import { parseRawCustomerQuote, mergeRawQuote, rawQuoteGaps, nextShortQuestion, QUOTE_INTAKE_QUESTIONS } from '@/lib/whatsapp/rawNlpQuote'
 import { messageContext, conversationKey, customerPhone,
   downloadChannelImage as downloadWhatsAppMediaAsDataUrl,
   sendChannelDocument as sendWhatsAppDocument,
@@ -379,10 +379,13 @@ async function processTommyQuoteTurn(
     await sendAndLog(conversationId, to, 'Hubo un problema técnico al procesar tu mensaje. Tus datos anteriores siguen guardados; puedes reenviar solo este último mensaje.')
     return
   }
-  let newState = mergeRawQuote(session.state, parsed.data)
-  newState.intake!.nlpLastRaw = text
-  // ÚNICA persistencia de la interpretación.
-  session = await saveQuoteSession(session.id, newState)
+  // Consolidar contra la versión MÁS RECIENTE; un segundo mensaje o foto no debe
+  // sobrescribir respuestas que llegaron en paralelo desde otro webhook.
+  session = await mutateQuoteSessionAtomically(session.id, current => {
+    const merged = mergeRawQuote(current, parsed.data)
+    merged.intake!.nlpLastRaw = text
+    return merged
+  })
   await addUsage(conversationId, parsed.usage).catch(error => console.warn('[WhatsApp][NLP] Telemetría:', error))
   const gaps = rawQuoteGaps(session.state)
   console.info('[WhatsApp][NLP] Campos pendientes:', gaps, 'quote_session:', session.id)
@@ -390,14 +393,8 @@ async function processTommyQuoteTurn(
     await finishTommyQuote(session, conversationId, to)
     return
   }
-  // Máximo tres mensajes de recopilación: el inicial + dos aclaraciones.
-  const questions = session.state.intake?.nlpQuestionCount ?? 0
-  if (questions >= 3) {
-    await sendAndLog(conversationId, to, 'Guardé lo que me contaste. Aún no puedo calcular un precio confiable con la información disponible. Puedes completar los datos faltantes cuando quieras; no perderás el avance.')
-    return
-  }
-  newState = { ...session.state, intake: { ...session.state.intake!, nlpQuestionCount: questions + 1 } }
-  session = await saveQuoteSession(session.id, newState)
+  // Una sola repregunta conjunta; si el cliente deja algo sin responder se vuelve
+  // a pedir ÚNICAMENTE lo pendiente, sin tope artificial ni interrogatorio secuencial.
   await sendAndLog(conversationId, to, nextShortQuestion(session.state))
 }
 
@@ -675,8 +672,8 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
         })
       }
       const prompt = resumed
-        ? (rawQuoteGaps(session.state).length ? 'Retomamos tu cotización. Puedes escribir los datos pendientes en lenguaje natural. 😊' : 'Tu cotización está completa; escribe CONFIRMAR para obtener el PDF.')
-        : TOMMY_QUOTE_START
+        ? (rawQuoteGaps(session.state).length ? nextShortQuestion(session.state) : 'Ya tenemos todo. Escribe CONFIRMAR si quieres recibir nuevamente el PDF.')
+        : QUOTE_INTAKE_QUESTIONS
       await sendAndLog(conversationId, to, prompt)
     } else if (resumed && session.state.intake?.stage === 'review') {
       await sendFreeformReview(session, conversationId, to, 'Retomamos tu cotización donde quedó.', 'next')

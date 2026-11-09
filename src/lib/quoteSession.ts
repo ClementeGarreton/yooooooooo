@@ -8,7 +8,7 @@ export type PropertyType = 'casa' | 'departamento' | 'oficina' | 'bodega' | 'otr
 
 export interface QuoteSessionState {
   /** Captura conversacional en JSONB: compatible con sesiones anteriores. */
-  intake?: { stage: 'describe' | 'review'; serviceAnswers: Array<'packing' | 'disassembly' | 'assembly' | 'unpacking'>; tommyVersion?: 1; tommyAnswers?: Array<'escaleras' | 'acarreo' | 'embalaje'>; tommyDetails?: Partial<Record<'escaleras' | 'acarreo' | 'embalaje', string>>; tommyAccess?: TommyAccess; tommySubmittedAt?: string; nlpQuestionCount?: number; nlpLastRaw?: string }
+  intake?: { stage: 'describe' | 'review'; serviceAnswers: Array<'packing' | 'disassembly' | 'assembly' | 'unpacking'>; tommyVersion?: 1; tommyAnswers?: Array<'escaleras' | 'acarreo' | 'embalaje'>; tommyDetails?: Partial<Record<'escaleras' | 'acarreo' | 'embalaje', string>>; tommyAccess?: TommyAccess; tommySubmittedAt?: string; nlpQuestionCount?: number; nlpLastRaw?: string; answeredQuoteFields?: string[] }
   personalInfo: {
     name: string | null
     email: string | null
@@ -53,6 +53,7 @@ export interface QuoteSessionState {
     }
   }
   taxDocument?: 'boleta' | 'factura' | null
+  stops?: Array<{ street: string; number: string; commune: string; region: string; additionalInfo: string; note: string }>
   items: Array<{ catalogItemId: string; quantity: number }>
   /** Seguimiento por foto, dentro del state JSONB existente. No requiere migraciones. */
   inventoryPhotos?: Array<{
@@ -77,6 +78,10 @@ export interface QuoteSessionState {
     observations: string
     photos: string[]
     extrasStep?: ExtrasStep
+    extraHelpers?: number
+    fridgeDisassembly?: boolean
+    priority?: boolean
+    stairsCarry?: boolean
   }
   confirmed: boolean
 }
@@ -121,6 +126,7 @@ export function createEmptyQuoteState(phone: string): QuoteSessionState {
       details: { propertyType: null, floor: null, hasElevator: null, parkingDistance: null },
     },
     taxDocument: null,
+    stops: [],
     items: [],
     inventoryPhotos: [],
     inventoryCollectionDone: false,
@@ -133,9 +139,13 @@ export function createEmptyQuoteState(phone: string): QuoteSessionState {
       observations: '',
       photos: [],
       extrasStep: 'packing',
+      extraHelpers: 0,
+      fridgeDisassembly: false,
+      priority: false,
+      stairsCarry: false,
     },
     confirmed: false,
-    intake: { stage: 'describe', serviceAnswers: [], tommyVersion: 1, tommyAnswers: [], tommyDetails: {}, nlpQuestionCount: 0 },
+    intake: { stage: 'describe', serviceAnswers: [], tommyVersion: 1, tommyAnswers: [], tommyDetails: {}, answeredQuoteFields: [], nlpQuestionCount: 0 },
   }
 }
 

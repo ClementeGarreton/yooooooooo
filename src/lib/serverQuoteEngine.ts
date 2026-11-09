@@ -1,3 +1,4 @@
+import { rawQuoteGaps } from '@/lib/whatsapp/rawNlpQuote'
 import jsPDF from 'jspdf'
 import { supabaseAdmin } from '@/lib/supabase'
 import { MAPS_CONFIG } from '@/config/maps'
@@ -9,7 +10,6 @@ import { routeDistanceWith, type RoutePoint } from '@/lib/routeDistance'
 import { upsertQuoteProspect } from '@/lib/server/quoteProspects'
 import { siteBaseUrl, toHiddenFileUrl } from '@/lib/fileLinks'
 import { loadQuotePhoto } from '@/lib/whatsapp/photoStorage'
-import { rawQuoteGaps } from '@/lib/whatsapp/rawNlpQuote'
 
 interface CatalogRow {
   id: string | number
@@ -18,6 +18,8 @@ interface CatalogRow {
   weight: number | string
   is_fragile: boolean | null
   is_glass: boolean | null
+  is_heavy: boolean | null
+  category?: string | null
 }
 
 export interface ServerQuoteResult {
@@ -27,7 +29,7 @@ export interface ServerQuoteResult {
   totalWeight: number
   totalDistance: number
   recommendedVehicle: string
-  items: Array<{ id: string; name: string; quantity: number; volume: number; weight: number; isFragile: boolean; isGlass: boolean }>
+  items: Array<{ id: string; name: string; category: string; quantity: number; volume: number; weight: number; isHeavy: boolean; isFragile: boolean; isGlass: boolean }>
   prospectId: string
   pdfUrl: string
   pdfFileName: string
@@ -46,7 +48,7 @@ async function calculateDistance(state: QuoteSessionState) {
     address.street && address.commune
       ? { street: address.street, number: address.number || '', commune: address.commune, region: address.region || '' }
       : null
-  const points = [point(state.origin.address), point(state.destination.address)].filter((p): p is RoutePoint => p !== null)
+  const points = [point(state.origin.address), ...(state.stops || []).map(point), point(state.destination.address)].filter((p): p is RoutePoint => p !== null)
   return routeDistanceWith(points, {
     geocode: async (p) => {
       const r = await geocodeAddressServer(p)
@@ -65,7 +67,7 @@ export async function calculateSessionQuote(state: QuoteSessionState) {
   const ids = state.items.map((item) => item.catalogItemId)
   const { data: rows, error } = await supabaseAdmin
     .from('catalog_items')
-    .select('id,name,volume,weight,is_fragile,is_glass,is_active')
+    .select('id,name,category,volume,weight,is_heavy,is_fragile,is_glass,is_active')
     .in('id', ids)
     .eq('is_active', true)
   if (error) throw new Error(error.message)
@@ -78,9 +80,11 @@ export async function calculateSessionQuote(state: QuoteSessionState) {
       return {
         id: String(row.id),
         name: row.name,
+        category: row.category || '',
         quantity: selected.quantity,
         volume: Number(row.volume),
         weight: Number(row.weight),
+        isHeavy: Boolean(row.is_heavy),
         isFragile: Boolean(row.is_fragile),
         isGlass: Boolean(row.is_glass),
       }
@@ -94,27 +98,20 @@ export async function calculateSessionQuote(state: QuoteSessionState) {
   // del cotizador web. Así una cotización por WhatsApp da el mismo valor que en la web y
   // sigue cualquier cambio que se haga en Configuración → Precios.
   const [pricing, totalDistance] = await Promise.all([readPricingConfig(), calculateDistance(state)])
-  const access = state.intake?.tommyAccess
-  const stairsArticles = access?.stairsAll ? items : (access?.stairsInventory || []).map(selected => {
-    const item = items.find(item => item.id === selected.catalogItemId)
-    return item ? { ...item, quantity: Math.min(item.quantity, selected.quantity) } : null
-  }).filter((item): item is (typeof items)[number] => item !== null)
-  const stairInputs = access?.stairsItems ? stairsArticles : items
+  // «No se usarán escaleras» no implica «hay ascensor», pero sí significa
+  // que NO corresponde cobrar un recargo por escaleras en esta cotización preliminar.
   const result = calculateQuote({
     items,
-    origin: { floor: access?.originStairs === false ? 0 : state.origin.details.floor ?? access?.originFloors ?? undefined,
-      // El acceso utilizable y el uso declarado de escalera son cosas distintas.
-      hasElevator: access?.originStairs === true ? false : (access?.originStairs === false ? true : state.origin.details.hasElevator ?? undefined) },
-    destination: { floor: access?.destinationStairs === false ? 0 : state.destination.details.floor ?? access?.destinationFloors ?? undefined,
-      hasElevator: access?.destinationStairs === true ? false : (access?.destinationStairs === false ? true : state.destination.details.hasElevator ?? undefined) },
-    originStairItems: access ? (access.originStairs ? stairInputs : []) : undefined,
-    destinationStairItems: access ? (access.destinationStairs ? stairInputs : []) : undefined,
+    origin: { floor: state.origin.details.floor ?? undefined, hasElevator: state.origin.details.hasElevator ?? undefined },
+    destination: { floor: state.destination.details.floor ?? undefined, hasElevator: state.destination.details.hasElevator ?? undefined },
     distanceKm: totalDistance,
-    dateTime: state.schedule.date ? `${state.schedule.date}T${state.schedule.time || '12:00'}:00` : null,
+    dateTime: state.schedule.date && state.schedule.time ? `${state.schedule.date}T${state.schedule.time}:00` : null,
     isFlexible: state.schedule.isFlexible,
     isCompany: state.personalInfo.isCompany,
     additionalServices: { disassembly: state.additionalServices.disassembly, assembly: state.additionalServices.assembly,
-      packing: state.additionalServices.packing, unpacking: state.additionalServices.unpacking },
+      packing: state.additionalServices.packing, unpacking: state.additionalServices.unpacking,
+      extraHelpers: state.additionalServices.extraHelpers ?? 0, fridgeDisassembly: state.additionalServices.fridgeDisassembly ?? false,
+      priority: state.additionalServices.priority ?? false },
     pricing,
   })
 
@@ -179,42 +176,22 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
   const access = (endpoint: 'origin' | 'destination') => {
     const details = state[endpoint].details
     const label = endpoint === 'origin' ? 'Origen' : 'Destino'
-    const a = state.intake?.tommyAccess
-    // La web todavía usa su ficha original, no las respuestas de Tommy.
-    if (!a) {
-      const floor = details.floor === null ? 'Sin informar' : `${details.floor}° piso`
-      const elevator = details.hasElevator === null ? 'Sin confirmar' : (details.hasElevator ? 'Sí' : 'No')
-      const carry = details.parkingDistance === null ? 'Sin informar' : `${details.parkingDistance} m`
-      line(`${label}: ${floor} | Ascensor: ${elevator} | Acarreo: ${carry}`)
-      return
-    }
-    const stairsUsed = a[endpoint === 'origin' ? 'originStairs' : 'destinationStairs']
-    const parts = [`${label}: Escaleras: ${stairsUsed === true ? 'Sí' : 'No'}`]
-    if (stairsUsed && details.floor !== null) parts.push(`${details.floor} pisos por escalera`)
-    if (details.hasElevator !== null) parts.push(`Ascensor: ${details.hasElevator ? 'Sí' : 'No'}`)
-    if (details.parkingDistance !== null) parts.push(`Acarreo: ${details.parkingDistance} m`)
-    line(parts.join(' | '))
+    const floor = details.floor === null ? 'Sin informar' : `${details.floor}° piso`
+    const elevator = details.hasElevator === null ? 'Sin confirmar' : (details.hasElevator ? 'Sí' : 'No')
+    const carry = details.parkingDistance === null ? 'Sin informar' : `${details.parkingDistance} m`
+    line(`${label}: ${floor} | Ascensor: ${elevator} | Acarreo: ${carry}`)
   }
 
   drawHeader()
   section('Cliente')
-  // La cotización WhatsApp no pide nombre, email ni documento tributario:
-  // jamás presentar esos campos no solicitados como variables sin definir.
-  const contact = [
-    state.personalInfo.name ? `Nombre: ${state.personalInfo.name}` : '',
-    state.personalInfo.phone ? `Teléfono: ${state.personalInfo.phone}` : '',
-  ].filter(Boolean).join(' | ')
-  if (contact) line(contact)
-  const fiscal = [
-    state.personalInfo.email ? `Correo: ${state.personalInfo.email}` : '',
-    state.taxDocument ? `Documento: ${state.taxDocument}` : '',
-  ].filter(Boolean).join(' | ')
-  if (fiscal) line(fiscal)
+  line(`Nombre: ${state.personalInfo.name || 'No informado'} | Teléfono: ${state.personalInfo.phone || 'No informado'}`)
+  line(`Correo: ${state.personalInfo.email || 'No informado'} | Documento: ${state.taxDocument || 'Por definir'}`)
 
   section('Mudanza')
-  line(`Fecha: ${state.schedule.date}${state.schedule.time ? ` | Hora: ${state.schedule.time}` : ''}`)
+  line(`Fecha: ${state.schedule.date || 'Por confirmar'} | Hora: ${state.schedule.time || 'Por confirmar'}`)
   line(`Origen: ${addressText(state.origin.address)}`)
   line(`Destino: ${addressText(state.destination.address)}`)
+  for (const [index,stop] of (state.stops || []).entries()) line(`Parada ${index+1}: ${[stop.street,stop.number,stop.commune,stop.region].filter(Boolean).join(', ')}${stop.note ? ` - ${stop.note}` : ''}`)
   line(`Distancia de ruta: ${quote.totalDistance.toFixed(2)} km`)
 
   section('Accesos y servicios')
@@ -222,7 +199,9 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
   access('destination')
   const responses = state.intake?.tommyDetails
   if (responses?.escaleras) line(`Escaleras declaradas: ${responses.escaleras}`)
-  if (state.intake?.tommyAccess?.stairsItems) line(`Artículos por escalera: ${state.intake.tommyAccess.stairsItems}`)
+  if ([state.origin, state.destination].some((p) => (p.details.floor || 0) > 0 && p.details.hasElevator === false)) {
+    line('Recargo de escaleras según pisos declarados y ausencia de ascensor.', 18, 8.5)
+  }
   if (responses?.acarreo) line(`Distancia de carga declarada: ${responses.acarreo}`)
   const packDetail = responses?.embalaje || ''
   const observations = state.additionalServices.observations === '__pending__' ? '' : (state.additionalServices.observations || '')
@@ -231,6 +210,9 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
     : 'No'
   line(`Embalaje: ${packingDescription}`)
   line(`Desarmado: ${state.additionalServices.disassembly ? 'Sí' : 'No'} | Armado: ${state.additionalServices.assembly ? 'Sí' : 'No'} | Desembalaje: ${state.additionalServices.unpacking ? 'Sí' : 'No'}`)
+  line(`Ayudantes adicionales: ${state.additionalServices.extraHelpers ?? 0} | Desarmado de refrigerador: ${state.additionalServices.fridgeDisassembly ? 'Sí' : 'No'} | Prioritario: ${state.additionalServices.priority ? 'Sí' : 'No'}`)
+  line(`Bultos por escalera fuera del ascensor: ${state.additionalServices.stairsCarry ? 'Sí' : 'No'} | Fecha flexible: ${state.schedule.isFlexible ? 'Sí' : 'No'}`)
+  line(`Origen: ${state.origin.details.propertyType || 'Sin informar'} | Destino: ${state.destination.details.propertyType || 'Sin informar'}`)
 
   section('Inventario')
   for (const item of quote.items) {
@@ -294,7 +276,7 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
   }
 
   // Pie estable en todas las páginas, sin tapar el desglose.
-  const pages = pdf.internal.getNumberOfPages()
+  const pages = pdf.getNumberOfPages()
   for (let i = 1; i <= pages; i++) {
     pdf.setPage(i)
     pdf.setDrawColor(225, 225, 225)
@@ -324,6 +306,7 @@ async function upsertProspect(state: QuoteSessionState, quoteId: string, quote: 
     company_rut: state.personalInfo.companyRut,
     // Igual que la web: calle, número, comuna y región, sin el país.
     origin_address: addressText(state.origin.address).replace(/, Chile$/, ''),
+    stops: state.stops || [],
     destination_address: addressText(state.destination.address).replace(/, Chile$/, ''),
     origin_floor: state.origin.details.floor,
     origin_has_elevator: state.origin.details.hasElevator,
@@ -351,10 +334,12 @@ async function upsertProspect(state: QuoteSessionState, quoteId: string, quote: 
       isFlexible: state.schedule.isFlexible,
       origin: { address: state.origin.address, details: state.origin.details },
       destination: { address: state.destination.address, details: state.destination.details },
-      stops: [],
+      stops: state.stops || [],
       items: quote.items.map((item) => ({ id: item.id, name: item.name, volume: item.volume,
-        weight: item.weight, quantity: item.quantity, isFragile: item.isFragile, isGlass: item.isGlass })),
-      additionalServices: { ...state.additionalServices },
+        weight: item.weight, quantity: item.quantity, category: item.category,
+        isHeavy: item.isHeavy, isFragile: item.isFragile, isGlass: item.isGlass })),
+      additionalServices: { ...state.additionalServices,
+        observations: state.additionalServices.observations === '__pending__' ? '' : state.additionalServices.observations },
     },
     additional_services: {
       disassembly: state.additionalServices.disassembly,
@@ -362,7 +347,10 @@ async function upsertProspect(state: QuoteSessionState, quoteId: string, quote: 
       packing: state.additionalServices.packing,
       unpacking: state.additionalServices.unpacking,
       observations: state.additionalServices.observations === '__pending__' ? '' : state.additionalServices.observations,
-      extraHelpers: 0,
+      extraHelpers: state.additionalServices.extraHelpers || 0,
+      fridgeDisassembly: state.additionalServices.fridgeDisassembly || false,
+      priority: state.additionalServices.priority || false,
+      stairsCarry: state.additionalServices.stairsCarry || false,
       requiredCrew: quote.requiredCrew,
       totalCrew: quote.totalCrew,
     },
@@ -428,15 +416,13 @@ export async function generateQuoteFromSession(session: QuoteSessionRow): Promis
 export async function generatePreliminaryWhatsAppQuote(session: QuoteSessionRow): Promise<ServerQuoteResult> {
   const state = session.state
   const missing = rawQuoteGaps(state)
-  if (missing.length) throw new Error(`Cotización incompleta: ${missing.join(', ')}`)
-  if (!state.origin.address.street || !state.destination.address.street || !state.schedule.date || !state.items.length || state.pendingInventory.length) {
-    throw new Error('Faltan direcciones, fecha o inventario para calcular el precio estimativo')
-  }
+  if (missing.length) throw new Error(`No se genera PDF con variables sin contestar: ${missing.join(', ')}`)
   const quote = await calculateSessionQuote(state)
   if (!Number.isFinite(quote.estimatedPrice) || quote.estimatedPrice <= 0) {
     throw new Error('El cálculo no devolvió un precio estimativo válido')
   }
   const quoteId = session.quote_id || `YME-WA-${Date.now().toString(36).toUpperCase()}`
+  const prospectId = await upsertProspect(state, quoteId, quote)
   const photoPaths = (state.inventoryPhotos || []).filter((photo) => photo.storagePath).map((photo) => photo.storagePath!)
   const photoData = (await Promise.all(photoPaths.slice(0, 12).map(loadQuotePhoto))).filter((value): value is string => Boolean(value))
   const pdf = generateQuotePdfBuffer(state, quote, quoteId, photoData)
@@ -448,7 +434,7 @@ export async function generatePreliminaryWhatsAppQuote(session: QuoteSessionRow)
   if (uploadError) throw new Error(`No se pudo guardar el PDF estimativo: ${uploadError.message}`)
   const pdfUrl = supabaseAdmin.storage.from('bookings').getPublicUrl(path).data.publicUrl
   const { error: saveError } = await supabaseAdmin.from('quote_sessions').update({
-    status: 'quoted', quote_id: quoteId, estimated_price: quote.estimatedPrice,
+    status: 'quoted', quote_id: quoteId, prospect_id: prospectId, estimated_price: quote.estimatedPrice,
     total_volume: quote.totalVolume, total_weight: quote.totalWeight,
     total_distance: quote.totalDistance, recommended_vehicle: quote.recommendedVehicle,
     pdf_url: pdfUrl,
@@ -457,7 +443,7 @@ export async function generatePreliminaryWhatsAppQuote(session: QuoteSessionRow)
   }).eq('id', session.id)
   if (saveError) throw new Error(`PDF generado, pero no se pudo cerrar la sesión: ${saveError.message}`)
   return {
-    quoteId, prospectId: '', pdfUrl: toHiddenFileUrl(pdfUrl, siteBaseUrl() || 'https://yomeencargo.cl'),
+    quoteId, prospectId, pdfUrl: toHiddenFileUrl(pdfUrl, siteBaseUrl() || 'https://yomeencargo.cl'),
     pdfFileName: fileName, ...quote,
   }
 }

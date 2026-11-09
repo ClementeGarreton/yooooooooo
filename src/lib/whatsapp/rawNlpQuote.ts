@@ -1,269 +1,281 @@
-/** Cotizador WhatsApp: un único parser OpenAI por mensaje natural.
- * Sin diff, regex interpretativas, reglas de preguntas encadenadas ni segundo parser.
- * Las únicas comprobaciones locales son tipos, IDs del catálogo y datos mínimos para precio/PDF.
+/**
+ * Único ciclo de WhatsApp: texto libre -> NLP estructurado -> quote_sessions.state ->
+ * preguntas AGRUPADAS por TODOS los datos faltantes del cotizador web.
+ * Los valores ausentes son null; "No" es false; 0 es una respuesta válida.
  */
-import type { QuoteSessionState } from '@/lib/quoteSession'
+import type { QuoteSessionState, PropertyType } from '@/lib/quoteSession'
 import { createStructuredResponseWithUsage } from '@/lib/ai/openai'
 import { supabaseAdmin } from '@/lib/supabase'
 
-const fields = [
-  'originStreet','originNumber','originCommune','originRegion','destinationStreet','destinationNumber','destinationCommune','destinationRegion',
-  'date','time','originFloor','destinationFloor','originElevator','destinationElevator','originParkingMeters','destinationParkingMeters',
-  'stairsAnswer','stairsDetail','originStairs','destinationStairs','stairsItemsMode','stairsItemsDetail','carryAnswer','carryDetail','packingAnswer','packingDetail',
-  'inventoryAction',
-] as const
+type Stop = { street: string; number: string; commune: string; region: string; additionalInfo: string; note: string }
+type ItemExtraction = { catalogItemId: string; quantity: number; source: string }
 
-type Field = typeof fields[number]
 type Data = {
-  originStreet: string | null; originNumber: string | null; originCommune: string | null; originRegion: string | null
-  destinationStreet: string | null; destinationNumber: string | null; destinationCommune: string | null; destinationRegion: string | null
-  date: string | null; time: string | null
-  originFloor: number | null; destinationFloor: number | null; originElevator: boolean | null; destinationElevator: boolean | null
+  name: string | null; email: string | null; taxDocument: 'boleta' | 'factura' | null
+  companyName: string | null; companyRut: string | null
+  date: string | null; time: string | null; isFlexible: boolean | null
+  originStreet: string | null; originNumber: string | null; originCommune: string | null; originRegion: string | null; originAdditionalInfo: string | null
+  destinationStreet: string | null; destinationNumber: string | null; destinationCommune: string | null; destinationRegion: string | null; destinationAdditionalInfo: string | null
+  originPropertyType: PropertyType | null; destinationPropertyType: PropertyType | null
+  originFloor: number | null; destinationFloor: number | null
+  originElevator: boolean | null; destinationElevator: boolean | null
   originParkingMeters: number | null; destinationParkingMeters: number | null
+  stopsSpecified: boolean | null; stops: Stop[]
+  inventoryAction: 'none' | 'replace' | 'add'; inventory: ItemExtraction[]; unresolved: string[]
+  disassembly: boolean | null; assembly: boolean | null; packing: boolean | null; unpacking: boolean | null
+  extraHelpers: number | null; fridgeDisassembly: boolean | null; priority: boolean | null; stairsCarry: boolean | null
+  observations: string | null
+  // Compatibilidad con los mensajes antiguos de seis preguntas.
   stairsAnswer: boolean | null; stairsDetail: string | null
-  originStairs: boolean | null; destinationStairs: boolean | null
-  stairsItemsMode: 'none' | 'all' | 'list'; stairsItemsDetail: string | null
-  stairsInventory: Array<{ catalogItemId: string; quantity: number }>
   carryAnswer: boolean | null; carryDetail: string | null
   packingAnswer: boolean | null; packingDetail: string | null
-  inventoryAction: 'none' | 'replace' | 'add'
-  inventory: Array<{ catalogItemId: string; quantity: number; source: string }>
-  unresolved: string[]
 }
-const strings = ['originStreet','originNumber','originCommune','originRegion','destinationStreet','destinationNumber','destinationCommune','destinationRegion','date','time','stairsDetail','stairsItemsDetail','carryDetail','packingDetail']
-const numbers = ['originFloor','destinationFloor','originParkingMeters','destinationParkingMeters']
-const bools = ['originElevator','destinationElevator','originStairs','destinationStairs','stairsAnswer','carryAnswer','packingAnswer']
-const props: Record<string, unknown> = {}
-for (const k of strings) props[k] = { type: ['string','null'] }
-for (const k of numbers) props[k] = { type: ['number','null'] }
-for (const k of bools) props[k] = { type: ['boolean','null'] }
-props.stairsItemsMode = { type:'string', enum:['none','all','list'] }
-props.stairsInventory = {type:'array', items: {type:'object', additionalProperties:false,
-  properties: {catalogItemId:{type:'string'},quantity:{type:'integer'}}, required:['catalogItemId','quantity'] }}
-props.inventoryAction = { type: 'string', enum: ['none','replace','add'] }
-props.inventory = { type: 'array', items: { type: 'object', additionalProperties: false,
-  properties: { catalogItemId: {type:'string'}, quantity:{type:'integer'}, source:{type:'string'} },
-  required: ['catalogItemId','quantity','source'] } }
-props.unresolved = { type:'array', items: { type:'string' } }
-const schema = { type: 'object', additionalProperties: false, properties: props,
-  required: [...fields, 'inventory', 'stairsInventory', 'unresolved'] }
 
-function compact(state: QuoteSessionState) {
+const strings = [
+  'name','email','companyName','companyRut','date','time',
+  'originStreet','originNumber','originCommune','originRegion','originAdditionalInfo',
+  'destinationStreet','destinationNumber','destinationCommune','destinationRegion','destinationAdditionalInfo',
+  'observations','stairsDetail','carryDetail','packingDetail',
+] as const
+const numbers = ['originFloor','destinationFloor','originParkingMeters','destinationParkingMeters','extraHelpers'] as const
+const bools = [
+  'isFlexible','originElevator','destinationElevator','stopsSpecified','disassembly','assembly','packing','unpacking',
+  'fridgeDisassembly','priority','stairsCarry','stairsAnswer','carryAnswer','packingAnswer',
+] as const
+const props: Record<string,unknown> = {}
+for (const k of strings) props[k] = { type:['string','null'] }
+for (const k of numbers) props[k] = { type:['number','null'] }
+for (const k of bools) props[k] = { type:['boolean','null'] }
+for (const k of ['originPropertyType','destinationPropertyType']) props[k] = { type:['string','null'], enum:['casa','departamento','oficina','bodega','otro',null] }
+props.taxDocument = { type:['string','null'], enum:['boleta','factura',null] }
+props.inventoryAction = { type:'string', enum:['none','replace','add'] }
+props.inventory = { type:'array', items:{ type:'object', additionalProperties:false, properties:{
+  catalogItemId:{type:'string'}, quantity:{type:'integer'}, source:{type:'string'},
+}, required:['catalogItemId','quantity','source'] } }
+props.unresolved = { type:'array', items:{ type:'string' } }
+props.stops = { type:'array', items:{ type:'object', additionalProperties:false, properties:{
+  street:{type:'string'},number:{type:'string'},commune:{type:'string'},region:{type:'string'},
+  additionalInfo:{type:'string'},note:{type:'string'},
+},required:['street','number','commune','region','additionalInfo','note'] } }
+const schema = { type:'object', additionalProperties:false, properties:props, required:Object.keys(props) }
+
+export const QUOTE_INTAKE_QUESTIONS = [
+  '¡Hola! 👋 Cuéntame tu mudanza como te resulte más cómodo; puedes responder todo en un solo mensaje.',
+  '',
+  '¿Cuál es tu nombre y correo? ¿Quieres boleta o factura? Si es factura, incluye razón social y RUT.',
+  '¿Qué día y a qué hora te acomoda? ¿Tienes flexibilidad de fecha?',
+  '¿De dónde a dónde trasladamos? Indica calle, número, comuna y, si corresponde, departamento. En ambos lugares, ¿es casa, departamento, oficina o bodega? ¿En qué piso, con o sin ascensor, y a cuántos metros del acceso puede estacionar el camión?',
+  '¿Qué muebles, cajas y otros artículos llevas y cuántos de cada uno? ¿Hay alguna parada intermedia para cargar o descargar?',
+  '¿Necesitas desarmado, armado, embalaje o desembalaje? ¿Hay objetos que deban subir o bajar por escalera aunque exista ascensor? ¿Necesitas desarmar un refrigerador, ayudantes adicionales o servicio prioritario? Si hay algún detalle importante, inclúyelo.',
+  '',
+  'Si algún servicio no lo necesitas, basta con decir «no». Con tu respuesta prepararé el precio y solo preguntaré junto lo que falte. 🚚',
+].join('\n')
+
+function compact(state:QuoteSessionState) {
   return {
-    origin: state.origin, destination: state.destination, schedule: state.schedule,
-    items: state.items, serviceAnswers: state.intake?.tommyAnswers || [],
-    serviceDetails: state.intake?.tommyDetails || {}, access: state.intake?.tommyAccess || {}, packing: state.additionalServices.packing,
-    pendingQuestions: rawQuoteGaps(state).length ? nextShortQuestion(state) : null,
+    personalInfo:state.personalInfo, taxDocument:state.taxDocument, schedule:state.schedule,
+    origin:state.origin, destination:state.destination, stops:state.stops ?? [],
+    stopsAnswered:state.intake?.answeredQuoteFields?.includes('stops') || false,
+    items:state.items, services:state.additionalServices,
+    answeredFields:state.intake?.answeredQuoteFields || [],
+    legacyServiceAnswers:state.intake?.tommyAnswers || [],
   }
 }
 
-export async function parseRawCustomerQuote(state: QuoteSessionState, rawMessage: string) {
-  const { data: catalog, error } = await supabaseAdmin.from('catalog_items')
+export async function parseRawCustomerQuote(state:QuoteSessionState, rawMessage:string) {
+  const {data:catalog,error} = await supabaseAdmin.from('catalog_items')
     .select('id,name,category').eq('is_active',true).order('name')
   if (error) throw new Error(`Catálogo no disponible: ${error.message}`)
-  const rows = (catalog || []).map((r: any) => ({ id: String(r.id), name: String(r.name), category: String(r.category || '') }))
-  const ids = new Set(rows.map(r => r.id))
-  const { data, usage } = await createStructuredResponseWithUsage<Data>({
-    // Sol prioriza capacidad semántica sin pagar el coste de reasoning alto en cada mensaje.
-    model: process.env.OPENAI_NLP_MODEL || 'gpt-6.1-sol', reasoningEffort: 'low', ignoreGlobalReasoningEffort: true,
-    schemaName: 'whatsapp_raw_quote_nlp', schema, maxOutputTokens: 3800,
-    instructions: `Eres el ÚNICO intérprete semántico de una cotización de mudanzas en Chile.
-Recibes el mensaje del cliente sin modificar, posiblemente con un formulario copiado y editado.
-Extrae TODA la información nueva en un JSON, sin restringir dialectos, faltas ortográficas ni estilo.
-Si copia preguntas, diferencia la pregunta de la respuesta añadida; no leas palabras de la pregunta como respuesta.
-Interpreta frases naturales y respuestas numeradas SEGÚN pendingQuestions en el estado; los números son índices de esas preguntas, no campos absolutos. Si escribe "50mts", es una distancia de carga de 50 metros.
-Si dice "no hay escaleras", stairsAnswer=false. Si dice "5 pisos en origen" originFloor=5.
-"Ascensor" y "escaleras" son cosas diferentes. No inventes ascensores a partir del piso.
-Si se usarán escaleras en origen o destino, marca originStairs/destinationStairs. «5 pisos por escaleras en origen» => originStairs=true y originFloor=5; el destino sigue null salvo respuesta explícita.
-«No usaremos escaleras en ninguna parte» => originStairs=false y destinationStairs=false. Si se usan escaleras en un lugar, NO deduzcas que el otro es false sin confirmación.
-Si el cliente dice qué muebles irán por escalera, stairsItemsMode='all' si TODOS (todo el inventario), o 'list' si da algunos concretos: rellena stairsInventory con IDs y cantidades válidas del inventario actual. stairsItemsDetail describe exactamente los muebles. Si no lo dice, stairsItemsMode='none' y stairsInventory=[]; no supongas TODOS.
-No confundas muebles de embalaje con muebles que irán por escalera.
-Si ya se sabe «50mts» pero faltaba a qué extremo corresponde, y ahora indica «en origen», «en destino» o «ambos», aplica esos 50 metros al extremo indicado sin preguntarlos otra vez.
-Respeta las palabras "origen", "destino", "ambos" y los nombres de comunas; solo llena lados indicados inequívocamente.
-Conserva lo conocido: en la salida, los campos NO mencionados en este turno deben ser null.
-Una negación explícita para un servicio es false, ausencia de respuesta es null.
-Para escaleras/acarreo/embalaje, devuelve respuesta y detalle; registra metros SOLO en los extremos mencionados, sin convertir un lado no informado a 0. Para acarreo negado expresamente devuelve carryAnswer=false.
-Los muebles SOLO se asignan a IDs del catálogo dado. Incluye cantidades. Si el mensaje repite un inventario completo, inventoryAction=replace; si solo agrega muebles, add; si no contiene inventario, none.
-No cambies la cantidad de un ítem ya registrado si solo lo menciona como contexto de embalaje/escaleras. Si escribe los ítems listados de nuevo con cantidades iguales en un formulario copiado, usa replace, nunca los sumes.
-Si un objeto a trasladar no coincide con catálogo, no inventes ID: regístralo en unresolved para solicitar aclaración solo si realmente es indispensable.
-Si una comuna identifica inequívocamente la región (ej. Las Condes = Metropolitana), puedes normalizar la región.
-La fecha actual en Chile es ${new Date().toLocaleDateString('en-CA',{timeZone:'America/Santiago'})}. Devuelve fecha YYYY-MM-DD y hora HH:mm si la dijo.
-El sistema hará máximo tres tandas de recopilación. Tu tarea es SOLO extraer los campos del texto. No redactes preguntas.
-NO estimes ni inventes precios; el servidor calcula con las tarifas oficiales.
+  const rows = (catalog || []).map((r:any)=>({id:String(r.id), name:String(r.name), category:String(r.category || '')}))
+  const ids = new Set(rows.map(r=>r.id))
+  const {data,usage} = await createStructuredResponseWithUsage<Data>({
+    model:process.env.OPENAI_NLP_MODEL || 'gpt-6.1-sol', reasoningEffort:'low',ignoreGlobalReasoningEffort:true,
+    schemaName:'whatsapp_full_quote_nlp', schema, maxOutputTokens:5200,
+    instructions:`Eres un intérprete semántico para el cotizador de Yo Me Encargo en Chile.
+Tu ÚNICA función es extraer datos nuevos del texto crudo del cliente hacia el esquema completo del quoteStore web.
+No redactes preguntas; el servidor compara cada variable con el estado guardado.
+No completes por defecto: un servicio no mencionado es null, NO false; un piso desconocido es null, NO 0.
+0, false y el texto "no" son respuestas válidas. No infieras un ascensor por la existencia de pisos.
+Si el cliente dice "ningún servicio adicional", marca todos los servicios opcionales false y ayudantes extra 0.
+Si dice "no hay paradas intermedias", stopsSpecified=false y stops=[]. Si da paradas con dirección completa, stopsSpecified=true y stops=[...]. Si menciona una parada pero faltan sus datos, stopsSpecified=null y stops=[].
+Si una ubicación no incluye departamento o instrucciones adicionales, deja additionalInfo null; no es requisito si no aplica.
+Si el cliente copia una plantilla con preguntas, SOLO interpreta lo escrito DESPUÉS de cada "Respuesta:"; no confundas preguntas con respuestas.
+Cuando la comuna permite inferir inequívocamente la región (ej.: Las Condes = Metropolitana) normalízala.
+Admite frases, erratas, numeraciones y modificaciones posteriores. Solo extrae campos NUEVOS o CORREGIDOS en este turno;
+los no mencionados van en null, inventario en [], stops en []. La información vieja se preserva automáticamente.
+No alteres un inventario existente si el cliente alude a un artículo solo como contexto; inventoryAction=none en ese caso.
+Para inventario completo o formulario copiado, inventoryAction=replace; si explícitamente añade cosas, add.
+Usa solo IDs de catálogo válidos. Si un artículo no existe, añádelo a unresolved, jamás inventes su ID.
+La fecha actual en Chile es ${new Date().toLocaleDateString('en-CA',{timeZone:'America/Santiago'})}; normaliza fecha YYYY-MM-DD, hora HH:mm.
+El campo parkingDistance es distancia real en metros desde el camión al acceso EN CADA EXTREMO (0 si responde sin acarreo).
+El campo stairsCarry señala bultos que deben ir por escalera A PESAR de existir ascensor; no equivale a piso.
+Datos de empresa son necesarios solamente para factura. No inventes nombre, e-mail o RUT.
+No inventes precio, volumen, peso, viaje ni recargos. Los calcula el motor del cotizador web.
 Catálogo válido: ${JSON.stringify(rows)}
-Estado previamente confirmado (contexto, NO lo copies en el resultado): ${JSON.stringify(compact(state))}`,
-    input: [{ role:'user', content: rawMessage }],
+Estado previo (contexto, NO copiar como nuevas respuestas): ${JSON.stringify(compact(state))}`,
+    input:[{role:'user',content:rawMessage}],
   })
-  // Nunca aceptar IDs arbitrarios producidos por un LLM.
-  data.inventory = data.inventory.filter(i => ids.has(i.catalogItemId) && Number.isInteger(i.quantity) && i.quantity > 0 && i.quantity <= 100)
-  data.stairsInventory = data.stairsInventory.filter(i => ids.has(i.catalogItemId) && Number.isInteger(i.quantity) && i.quantity > 0 && i.quantity <= 100)
-  return { data, usage }
+  data.inventory = data.inventory.filter(i=>ids.has(i.catalogItemId) && Number.isInteger(i.quantity) && i.quantity > 0 && i.quantity <= 100)
+  data.stops = data.stops.filter(s=>s.street && s.number && s.commune).slice(0,10)
+  return {data,usage}
 }
 
-function assign<T extends object, K extends keyof T>(obj: T, key: K, value: T[K] | null) {
-  if (value !== null && value !== undefined && (typeof value !== 'string' || value.trim())) obj[key] = value
+function assign<T extends object,K extends keyof T>(target:T,key:K,value:T[K] | null) {
+  if (value !== null && value !== undefined && (typeof value !== 'string' || value.trim())) target[key]=value
 }
 
-export function mergeRawQuote(state: QuoteSessionState, d: Data): QuoteSessionState {
-  const next: QuoteSessionState = structuredClone(state)
-  assign(next.origin.address,'street',d.originStreet); assign(next.origin.address,'number',d.originNumber)
-  assign(next.origin.address,'commune',d.originCommune); assign(next.origin.address,'region',d.originRegion)
-  assign(next.destination.address,'street',d.destinationStreet); assign(next.destination.address,'number',d.destinationNumber)
-  assign(next.destination.address,'commune',d.destinationCommune); assign(next.destination.address,'region',d.destinationRegion)
-  assign(next.schedule,'date',d.date); assign(next.schedule,'time',d.time)
-  assign(next.origin.details,'floor',d.originFloor); assign(next.destination.details,'floor',d.destinationFloor)
-  assign(next.origin.details,'hasElevator',d.originElevator); assign(next.destination.details,'hasElevator',d.destinationElevator)
-  // Una corrección posterior puede invalidar un «NO» anterior, que había guardado 0 m.
-  if (d.carryAnswer === true && state.intake?.tommyDetails?.acarreo === 'No') {
-    next.origin.details.parkingDistance = null
-    next.destination.details.parkingDistance = null
+export function mergeRawQuote(state:QuoteSessionState,d:Data):QuoteSessionState {
+  const next:QuoteSessionState = structuredClone(state)
+  next.intake ||= {stage:'describe',serviceAnswers:[],tommyVersion:1,tommyAnswers:[],tommyDetails:{}}
+  const answered = new Set(next.intake.answeredQuoteFields || [])
+  const mark = (key:string,value:unknown) => {if(value !== null && value !== undefined) answered.add(key)}
+  assign(next.personalInfo,'name',d.name); assign(next.personalInfo,'email',d.email)
+  if (d.taxDocument) {next.taxDocument=d.taxDocument;next.personalInfo.isCompany=d.taxDocument === 'factura';mark('taxDocument',d.taxDocument)}
+  assign(next.personalInfo,'companyName',d.companyName);assign(next.personalInfo,'companyRut',d.companyRut)
+  assign(next.schedule,'date',d.date);assign(next.schedule,'time',d.time)
+  assign(next.schedule,'isFlexible',d.isFlexible);mark('isFlexible',d.isFlexible)
+  for (const side of ['origin','destination'] as const) {
+    const origin = side === 'origin'
+    const address=next[side].address, details=next[side].details
+    assign(address,'street',origin?d.originStreet:d.destinationStreet)
+    assign(address,'number',origin?d.originNumber:d.destinationNumber)
+    assign(address,'commune',origin?d.originCommune:d.destinationCommune)
+    assign(address,'region',origin?d.originRegion:d.destinationRegion)
+    assign(address,'additionalInfo',origin?d.originAdditionalInfo:d.destinationAdditionalInfo)
+    assign(details,'propertyType',origin?d.originPropertyType:d.destinationPropertyType)
+    assign(details,'floor',origin?d.originFloor:d.destinationFloor)
+    assign(details,'hasElevator',origin?d.originElevator:d.destinationElevator)
+    assign(details,'parkingDistance',origin?d.originParkingMeters:d.destinationParkingMeters)
   }
-  assign(next.origin.details,'parkingDistance',d.originParkingMeters)
-  assign(next.destination.details,'parkingDistance',d.destinationParkingMeters)
   if (d.carryAnswer === false) {
-    next.origin.details.parkingDistance = 0
-    next.destination.details.parkingDistance = 0
+    next.origin.details.parkingDistance ??= 0
+    next.destination.details.parkingDistance ??= 0
   }
-  if (d.packingAnswer !== null) next.additionalServices.packing = d.packingAnswer
-  next.intake ||= { stage:'describe', serviceAnswers: [], tommyVersion: 1, tommyAnswers:[], tommyDetails:{} }
-  const access = { ...(next.intake.tommyAccess || {}) }
-  if (d.stairsAnswer === false) {
-    access.originStairs = false
-    access.destinationStairs = false
+  if (d.stopsSpecified !== null && d.stopsSpecified !== undefined && (!d.stopsSpecified || d.stops.length > 0)) {
+    next.stops = d.stopsSpecified ? d.stops : []
+    answered.add('stops')
   }
-  if (d.originStairs !== null) access.originStairs = d.originStairs
-  if (d.destinationStairs !== null) access.destinationStairs = d.destinationStairs
-  if (d.originFloor !== null && (d.stairsAnswer === true || d.originStairs === true)) access.originStairs = true
-  if (d.destinationFloor !== null && (d.stairsAnswer === true || d.destinationStairs === true)) access.destinationStairs = true
-  if (d.originElevator !== null) access.originElevator = d.originElevator
-  if (d.destinationElevator !== null) access.destinationElevator = d.destinationElevator
-  if (d.originFloor !== null && access.originStairs === true) access.originFloors = d.originFloor
-  if (d.destinationFloor !== null && access.destinationStairs === true) access.destinationFloors = d.destinationFloor
-  next.intake.tommyAccess = access
-  const marked = new Set(next.intake.tommyAnswers || [])
-  const details = {...next.intake.tommyDetails}
-  if (d.stairsAnswer !== null || d.stairsDetail || d.originStairs !== null || d.destinationStairs !== null) {
+  for (const key of ['disassembly','assembly','packing','unpacking','fridgeDisassembly','priority','stairsCarry','extraHelpers'] as const) {
+    assign(next.additionalServices,key,d[key]);mark(key,d[key])
+  }
+  if (d.packingAnswer !== null) {next.additionalServices.packing=d.packingAnswer;mark('packing',d.packingAnswer)}
+  if (d.observations !== null) {
+    next.additionalServices.observations=d.observations.trim() || ''
+    answered.add('observations')
+  }
+  const marked=new Set(next.intake.tommyAnswers||[])
+  const details={...next.intake.tommyDetails}
+  if (d.stairsAnswer!==null || d.stairsDetail) {
     marked.add('escaleras')
-    details.escaleras = (access.originStairs === false && access.destinationStairs === false)
-      ? 'No' : (d.stairsDetail || details.escaleras || 'Sí')
+    details.escaleras=d.stairsAnswer===false?'No':(d.stairsDetail || (d.stairsAnswer?'Sí':'Por confirmar'))
   }
-  if (d.carryAnswer !== null || d.carryDetail || d.originParkingMeters !== null || d.destinationParkingMeters !== null) {
-    marked.add('acarreo')
-    const meters = [d.originParkingMeters !== null ? `origen ${d.originParkingMeters} m` : '',
-      d.destinationParkingMeters !== null ? `destino ${d.destinationParkingMeters} m` : ''].filter(Boolean).join('; ')
-    details.acarreo = d.carryAnswer === false ? 'No' : (d.carryDetail || meters || 'Sí')
+  if (d.carryAnswer!==null || d.carryDetail || d.originParkingMeters!==null || d.destinationParkingMeters!==null) {
+    marked.add('acarreo');details.acarreo=d.carryDetail || (d.carryAnswer===false?'No':'Sí')
   }
-  if (d.packingAnswer !== null || d.packingDetail) {
-    marked.add('embalaje'); details.embalaje = d.packingDetail || (d.packingAnswer ? 'Sí' : 'No')
-    if (d.packingDetail) next.additionalServices.observations = [next.additionalServices.observations === '__pending__' ? '' : next.additionalServices.observations,d.packingDetail].filter(Boolean).join('; ')
-  }
-  next.intake.tommyDetails = details
-  next.intake.tommyAnswers = [...marked]
-  if (d.inventoryAction !== 'none' && d.inventory.length) {
-    const replacement = new Map<string,number>()
-    if (d.inventoryAction === 'add') for (const item of next.items) replacement.set(item.catalogItemId,item.quantity)
-    for (const item of d.inventory) replacement.set(item.catalogItemId,item.quantity)
-    next.items = [...replacement.entries()].map(([catalogItemId,quantity])=>({catalogItemId,quantity}))
-    next.pendingInventory = []
-    next.inventoryCollectionDone = true
-  }
-  if (d.stairsItemsMode === 'all') {
-    access.stairsItems = 'TODOS'
-    access.stairsAll = true
-    access.stairsInventory = []
-  } else if (d.stairsItemsMode === 'list' && d.stairsInventory.length) {
-    // Solo elementos realmente presentes en la ficha, con cantidades limitadas a lo declarado.
-    const current = new Map(next.items.map(item => [item.catalogItemId, item.quantity]))
-    const valid = d.stairsInventory.filter(item => current.has(item.catalogItemId) && item.quantity <= current.get(item.catalogItemId)!)
-    if (valid.length === d.stairsInventory.length) {
-      access.stairsItems = d.stairsItemsDetail || 'Artículos indicados por el cliente'
-      access.stairsAll = false
-      access.stairsInventory = valid
+  if (d.packingAnswer!==null || d.packing!==null || d.packingDetail) {
+    marked.add('embalaje');details.embalaje=d.packingDetail || ((d.packing ?? d.packingAnswer)?'Sí':'No')
+    if (d.packingDetail && d.observations===null) {
+      next.additionalServices.observations=[next.additionalServices.observations==='__pending__'?'':next.additionalServices.observations,d.packingDetail].filter(Boolean).join('; ')
     }
   }
-  next.intake.tommyAccess = access
-  if (d.unresolved?.length) {
-    next.pendingInventory = d.unresolved.map(sourceLabel=>({sourceLabel,quantity:1,question:`Artículo por precisar: ${sourceLabel}`,suggestions:[]}))
+  next.intake.tommyDetails=details
+  next.intake.tommyAnswers=[...marked]
+  if (d.inventoryAction !== 'none') {
+    const selected=new Map<string,number>()
+    if (d.inventoryAction==='add') for (const item of next.items) selected.set(item.catalogItemId,item.quantity)
+    for (const item of d.inventory) selected.set(item.catalogItemId,item.quantity)
+    if (selected.size) {
+      next.items=[...selected.entries()].map(([catalogItemId,quantity])=>({catalogItemId,quantity}))
+      next.inventoryCollectionDone=true
+    }
+    next.pendingInventory=d.unresolved.map(sourceLabel=>({sourceLabel,quantity:1,question:`Artículo por precisar: ${sourceLabel}`,suggestions:[]}))
+  } else if (d.unresolved.length) {
+    next.pendingInventory=d.unresolved.map(sourceLabel=>({sourceLabel,quantity:1,question:`Artículo por precisar: ${sourceLabel}`,suggestions:[]}))
   }
-  next.confirmed = false
-  next.intake.stage = 'review'
+  if (next.additionalServices.observations === '__pending__') next.additionalServices.observations = ''
+  next.intake.answeredQuoteFields=[...answered]
+  next.confirmed=false
+  next.intake.stage='review'
   return next
 }
 
-export type QuoteGap = 'direcciones' | 'inventario' | 'fecha' | 'escaleras' | 'acarreo' | 'embalaje' | 'accesos'
-/** Sólo son obligatorios los datos que afectan el precio o un servicio solicitado. */
-export function rawQuoteGaps(state: QuoteSessionState): QuoteGap[] {
-  const gaps: QuoteGap[] = []
-  const hasAddress = (a: QuoteSessionState['origin']['address']) => Boolean(a.street && a.number && a.commune)
-  if (!hasAddress(state.origin.address) || !hasAddress(state.destination.address)) gaps.push('direcciones')
-  if (!state.items.length || state.pendingInventory.length > 0) gaps.push('inventario')
-  if (!state.schedule.date) gaps.push('fecha')
-  const answered = new Set(state.intake?.tommyAnswers || [])
-  if (!answered.has('escaleras')) gaps.push('escaleras')
-  if (!answered.has('acarreo')) gaps.push('acarreo')
-  if (!answered.has('embalaje')) gaps.push('embalaje')
-  const access = state.intake?.tommyAccess || {}
-  const stairsSubset = (access.stairsInventory || [])
-  const currentItems = new Map(state.items.map(item => [item.catalogItemId, item.quantity]))
-  const invalidStairInventory = Boolean(access.stairsItems && !access.stairsAll && (
-    !stairsSubset.length || stairsSubset.some(item => !currentItems.has(item.catalogItemId) || item.quantity > currentItems.get(item.catalogItemId)!)
-  ))
-  if (answered.has('escaleras') && (
-    access.originStairs === undefined || access.destinationStairs === undefined ||
-    (access.originStairs && (access.originFloors === undefined || state.origin.details.hasElevator === null)) ||
-    (access.destinationStairs && (access.destinationFloors === undefined || state.destination.details.hasElevator === null)) ||
-    ((access.originStairs || access.destinationStairs) && (!access.stairsItems || invalidStairInventory))
-  )) gaps.push('accesos')
-  // No decir que se sabe el acarreo si se conoce un «sí» o una distancia genérica
-  // pero no se conoce la ubicación y los metros de cada extremo.
-  if (answered.has('acarreo') && state.intake?.tommyDetails?.acarreo !== 'No' &&
-      (state.origin.details.parkingDistance === null || state.destination.details.parkingDistance === null)) {
-    if (!gaps.includes('acarreo')) gaps.push('acarreo')
+export type QuoteGap =
+  | 'name'|'email'|'taxDocument'|'companyName'|'companyRut'|'date'|'time'|'isFlexible'
+  | 'originAddress'|'destinationAddress'|'originPropertyType'|'destinationPropertyType'
+  | 'originFloor'|'destinationFloor'|'originElevator'|'destinationElevator'
+  | 'originParkingMeters'|'destinationParkingMeters'|'stops'|'inventory'
+  | 'disassembly'|'assembly'|'packing'|'unpacking'|'fridgeDisassembly'
+  | 'priority'|'stairsCarry'|'extraHelpers'
+
+export function rawQuoteGaps(state:QuoteSessionState):QuoteGap[] {
+  const gaps:QuoteGap[]=[]
+  const answered=new Set(state.intake?.answeredQuoteFields || [])
+  if (!state.personalInfo.name?.trim()) gaps.push('name')
+  if (!state.personalInfo.email?.trim()) gaps.push('email')
+  if (!state.taxDocument) gaps.push('taxDocument')
+  if (state.taxDocument==='factura' || state.personalInfo.isCompany) {
+    if (!state.personalInfo.companyName?.trim()) gaps.push('companyName')
+    if (!state.personalInfo.companyRut?.trim()) gaps.push('companyRut')
   }
-  if (answered.has('embalaje') && state.additionalServices.packing &&
-      (!state.intake?.tommyDetails?.embalaje || state.intake.tommyDetails.embalaje === 'Sí')) {
-    if (!gaps.includes('embalaje')) gaps.push('embalaje')
+  if (!state.schedule.date) gaps.push('date')
+  if (!state.schedule.time) gaps.push('time')
+  if (!answered.has('isFlexible')) gaps.push('isFlexible')
+  for (const side of ['origin','destination'] as const) {
+    const {address,details}=state[side]
+    if (!address.street?.trim() || !address.number?.trim() || !address.commune?.trim() || !address.region?.trim()) gaps.push(`${side}Address` as QuoteGap)
+    if (!details.propertyType) gaps.push(`${side}PropertyType` as QuoteGap)
+    if (details.floor===null || !Number.isInteger(details.floor) || details.floor < 0) gaps.push(`${side}Floor` as QuoteGap)
+    if (details.hasElevator===null) gaps.push(`${side}Elevator` as QuoteGap)
+    if (details.parkingDistance===null || !Number.isFinite(details.parkingDistance) || details.parkingDistance < 0) gaps.push(`${side}ParkingMeters` as QuoteGap)
+  }
+  if (!answered.has('stops')) gaps.push('stops')
+  if (!state.items.length || state.pendingInventory.length || state.inventoryPhotos?.some(p=>p.status!=='done')) gaps.push('inventory')
+  for (const service of ['disassembly','assembly','packing','unpacking','fridgeDisassembly','priority','stairsCarry','extraHelpers'] as const) {
+    const helpers = state.additionalServices.extraHelpers
+    const invalidHelpers = service === 'extraHelpers' && (typeof helpers !== 'number' || !Number.isInteger(helpers) || helpers < 0)
+    if ((!answered.has(service) || invalidHelpers) && !(service === 'packing' && state.intake?.tommyAnswers?.includes('embalaje'))) gaps.push(service)
   }
   return gaps
 }
 
-function accessQuestions(state: QuoteSessionState): string[] {
-  const access = state.intake?.tommyAccess || {}
-  const questions: string[] = []
-  if (access.originStairs === undefined || access.destinationStairs === undefined) {
-    const ends = [access.originStairs === undefined ? 'origen' : '', access.destinationStairs === undefined ? 'destino' : ''].filter(Boolean)
-    questions.push(`¿Se usarán escaleras en ${ends.join(' y ')}? (Sí/No)`)
-  }
-  for (const [key, label] of [['origin', 'origen'], ['destination', 'destino']] as const) {
-    if (access[key === 'origin' ? 'originStairs' : 'destinationStairs']) {
-      if (access[key === 'origin' ? 'originFloors' : 'destinationFloors'] === undefined) questions.push(`¿Cuántos pisos por escalera en ${label}?`)
-      if (state[key].details.hasElevator === null) questions.push(`¿Hay ascensor utilizable en ${label}? (Sí/No)`)
-    }
-  }
-  if ((access.originStairs || access.destinationStairs) && (
-    !access.stairsItems || (!access.stairsAll && (!(access.stairsInventory || []).length || (access.stairsInventory || []).some(item =>
-      !state.items.some(current => current.catalogItemId === item.catalogItemId && current.quantity >= item.quantity)
-    )))
-  )) questions.push('¿Qué muebles pasan por escalera? (TODOS o cuáles)')
-  return questions
+// Las preguntas se agrupan por temática, pero cada campo pendiente está representado.
+const prompts:Record<QuoteGap,string>={
+  name:'tu nombre', email:'tu correo', taxDocument:'si quieres boleta o factura',
+  companyName:'razón social para la factura',companyRut:'RUT de la empresa',
+  date:'fecha del traslado',time:'hora del traslado',isFlexible:'si tienes flexibilidad de fecha',
+  originAddress:'dirección completa de origen (calle, número, comuna y región)',
+  destinationAddress:'dirección completa de destino (calle, número, comuna y región)',
+  originPropertyType:'tipo de inmueble de origen (casa/departamento/oficina/bodega)',
+  destinationPropertyType:'tipo de inmueble de destino',
+  originFloor:'piso en origen (0 si es planta baja)',destinationFloor:'piso en destino (0 si es planta baja)',
+  originElevator:'si hay ascensor en origen',destinationElevator:'si hay ascensor en destino',
+  originParkingMeters:'metros entre camión y acceso en origen (0 si no hay acarreo)',
+  destinationParkingMeters:'metros entre camión y acceso en destino (0 si no hay acarreo)',
+  stops:'si hay paradas intermedias; si hay, dirección y qué se carga/descarga',
+  inventory:'inventario completo: artículos y cantidades (incluye cualquier artículo pendiente de identificar)',
+  disassembly:'si necesitas desarmado de muebles',assembly:'si necesitas armado de muebles',
+  packing:'si necesitas embalaje',unpacking:'si necesitas desembalaje',
+  fridgeDisassembly:'si necesitas desarmar un refrigerador (si no corresponde, responde no)',
+  priority:'si quieres servicio prioritario',stairsCarry:'si hay bultos que deban subir o bajar por escalera aunque exista ascensor',
+  extraHelpers:'cantidad de ayudantes adicionales (0 si ninguno)',
 }
-
-export function nextShortQuestion(state: QuoteSessionState) {
-  const gaps = rawQuoteGaps(state)
-  const parts: string[] = []
-  if (gaps.includes('direcciones')) parts.push('las direcciones completas')
-  if (gaps.includes('inventario')) parts.push('los muebles y cantidades')
-  if (gaps.includes('fecha')) parts.push('la fecha')
-  if (gaps.includes('escaleras') && !gaps.includes('accesos')) parts.push('si se usan escaleras, dónde, cuántos pisos y qué muebles')
-  if (gaps.includes('accesos')) parts.push(...accessQuestions(state))
-  if (gaps.includes('acarreo')) {
-    const a = state.origin.details.parkingDistance, b = state.destination.details.parkingDistance
-    const stored = state.intake?.tommyDetails?.acarreo
-    if (a === null && b === null && stored && stored !== 'Sí' && stored !== 'No') parts.push(`Ya tengo «${stored}». ¿Son metros en origen, destino o ambos? Indica 0 m en el otro lugar.`)
-    else parts.push('¿Cuántos metros se caminan entre el camión y la puerta en origen y destino? (0 si ninguno)')
-  }
-  if (gaps.includes('embalaje')) parts.push('¿Qué artículos hay que embalar? (o No)')
-  return `😊 Para calcular sin suponer datos, me falta:
-${parts.map((part, i) => `${i + 1}) ${part}`).join('\n')}
-Puedes responder con los números o en tus palabras.`
+const groups:QuoteGap[][]=[
+  ['name','email','taxDocument','companyName','companyRut'],
+  ['date','time','isFlexible'],
+  ['originAddress','originPropertyType','originFloor','originElevator','originParkingMeters'],
+  ['destinationAddress','destinationPropertyType','destinationFloor','destinationElevator','destinationParkingMeters'],
+  ['inventory','stops'],
+  ['disassembly','assembly','packing','unpacking','fridgeDisassembly','priority','stairsCarry','extraHelpers'],
+]
+export function nextShortQuestion(state:QuoteSessionState):string {
+  const missing=new Set(rawQuoteGaps(state))
+  if (!missing.size) return 'Ya tengo todos los datos para calcular tu mudanza.'
+  const lines=groups.map(group=>group.filter(k=>missing.has(k)).map(k=>prompts[k])).filter(x=>x.length)
+  return [
+    '¡Gracias! Ya guardé todo lo que me contaste. Para terminar, solo necesito aclarar lo siguiente:',
+    '',
+    ...lines.map(g=>`• ${g.join('; ')}.`),
+    '',
+    'Respóndeme todo junto, con tus propias palabras. No hace falta volver a escribir lo anterior. 🚚',
+  ].join('\n')
 }

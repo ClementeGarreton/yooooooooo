@@ -11,8 +11,6 @@ export type TommyAccess = {
   originStairs?: boolean
   destinationStairs?: boolean
   stairsItems?: string
-  stairsAll?: boolean
-  stairsInventory?: Array<{ catalogItemId: string; quantity: number }>
   originFloors?: number
   destinationFloors?: number
 }
