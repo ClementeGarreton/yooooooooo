@@ -79,58 +79,106 @@ export function withQuoteFlowStep(state: QuoteSessionState, step: QuoteFlowStep)
 }
 
 const blank = (value: string | null | undefined): boolean => !value?.trim()
-function addressMissing(state: QuoteSessionState, side: 'origin' | 'destination'): string[] {
-  const a = state[side].address
-  return ([['street', 'calle'], ['number', 'número'], ['commune', 'comuna'], ['region', 'región']] as const)
-    .filter(([key]) => blank(a[key])).map(([, title]) => title)
+
+/** Une datos en español sin exponer etiquetas internas del quoteStore. */
+function joinSpanish(parts: string[]): string {
+  if (parts.length < 2) return parts[0] || ''
+  return `${parts.slice(0, -1).join(', ')} y ${parts[parts.length - 1]}`
 }
 
-/** Una pregunta por TEMA, no una pregunta por cada propiedad del quoteStore.
- * Extras optativos (paradas, prioridad, ayudantes, desembalaje, etc.) NO son
- * confirmaciones obligatorias. Se respetan cuando el cliente los menciona.
+function addressMissing(state: QuoteSessionState, side: 'origin' | 'destination'): string[] {
+  const address = state[side].address
+  return ([['street', 'la calle'], ['number', 'el número'], ['commune', 'la comuna'], ['region', 'la región']] as const)
+    .filter(([key]) => blank(address[key])).map(([, label]) => label)
+}
+
+function missingAccess(state: QuoteSessionState, side: 'origin' | 'destination') {
+  const details = state[side].details
+  return {
+    property: !details.propertyType,
+    floor: details.floor === null || !Number.isInteger(details.floor) || details.floor < 0,
+    elevator: details.hasElevator === null && !(details.propertyType === 'casa' && details.floor === 0),
+  }
+}
+
+/** Pregunta con frases completas. Nunca interpola «salida: piso, ascensor». */
+function accessQuestion(state: QuoteSessionState): string | null {
+  const parts: string[] = []
+  for (const side of ['origin', 'destination'] as const) {
+    const need = missingAccess(state, side)
+    if (!need.property && !need.floor && !need.elevator) continue
+    const location = side === 'origin' ? 'origen' : 'destino'
+    const action = side === 'origin' ? 'retiraremos' : 'dejaremos'
+    if (need.property) {
+      parts.push(`¿El lugar de ${location} es una casa, un departamento, una oficina o una bodega?`)
+    }
+    if (need.floor && need.elevator) {
+      parts.push(`En el ${location}, ¿en qué piso ${action} los muebles? ¿Hay ascensor allí?`)
+    } else if (need.floor) {
+      parts.push(`En el ${location}, ¿en qué piso ${action} los muebles?`)
+    } else if (need.elevator) {
+      parts.push(`¿Hay ascensor en el ${location}?`)
+    }
+  }
+  return parts.length ? parts.join(' ') : null
+}
+
+/** Una pregunta por TEMA, en español natural y sin exponer claves internas.
+ * Los servicios opcionales no se transforman en nuevas obligaciones.
  */
 export function missingQuoteQuestions(state: QuoteSessionState): string[] {
   const questions: string[] = []
   const p = state.personalInfo
-  const contact = [blank(p.name) ? 'nombre' : '', blank(p.email) ? 'correo' : '', blank(p.rut) ? 'RUT' : ''].filter(Boolean)
-  const billing = !state.taxDocument ? 'si necesitas boleta o factura' : state.taxDocument === 'factura'
-    ? [blank(p.companyName) ? 'razón social' : '', blank(p.companyRut) ? 'RUT de la empresa' : ''].filter(Boolean).join(' y ') : ''
-  const client = [...contact, billing].filter(Boolean)
-  if (client.length) questions.push(`Para tus datos, ¿me confirmas ${client.join(', ')}?`)
+  const contact = [blank(p.name) ? 'tu nombre' : '', blank(p.email) ? 'tu correo' : '', blank(p.rut) ? 'tu RUT' : ''].filter(Boolean)
+  const billing = !state.taxDocument ? '¿Necesitas boleta o factura?' : state.taxDocument === 'factura'
+    ? (blank(p.companyName) || blank(p.companyRut))
+      ? `¿Me compartes ${joinSpanish([blank(p.companyName) ? 'la razón social' : '', blank(p.companyRut) ? 'el RUT de la empresa' : ''].filter(Boolean))}?`
+      : '' : ''
+  if (contact.length) questions.push(`¿Me compartes ${joinSpanish(contact)}?${billing ? ` ${billing}` : ''}`)
+  else if (billing) questions.push(billing)
 
-  const schedule = [!state.schedule.date ? 'fecha' : '', !state.schedule.time ? 'hora' : '',
-    !state.intake?.answeredQuoteFields?.includes('isFlexible') ? 'si puedes cambiar la fecha (sí o no)' : ''].filter(Boolean)
-  if (schedule.length) questions.push(`Del traslado, ¿me indicas ${schedule.join(', ')}?`)
+  const needDate = !state.schedule.date
+  const needTime = !state.schedule.time
+  const needFlexibility = !state.intake?.answeredQuoteFields?.includes('isFlexible')
+  if (needDate || needTime || needFlexibility) {
+    const when = needDate && needTime ? '¿Qué día y a qué hora necesitas el traslado?'
+      : needDate ? '¿Qué día necesitas el traslado?'
+      : needTime ? '¿A qué hora necesitas el traslado?' : ''
+    const flexibility = needFlexibility ? '¿Podrías cambiar la fecha si fuera necesario?' : ''
+    questions.push([when, flexibility].filter(Boolean).join(' '))
+  }
 
-  const addresses = ([['origin','salida'],['destination','llegada']] as const)
-    .map(([side, label]) => ({ label, missing: addressMissing(state, side) }))
-    .filter(x => x.missing.length)
-  if (addresses.length) questions.push(`De las direcciones, falta ${addresses.map(x=>`${x.label}: ${x.missing.join(', ')}`).join('; ')}. ¿Me lo indicas?`)
+  const addressQuestions: string[] = []
+  for (const side of ['origin', 'destination'] as const) {
+    const missing = addressMissing(state, side)
+    if (missing.length) {
+      addressQuestions.push(`De la dirección de ${side === 'origin' ? 'origen' : 'destino'}, ¿me confirmas ${joinSpanish(missing)}?`)
+    }
+  }
+  if (addressQuestions.length) questions.push(addressQuestions.join(' '))
 
-  const access = ([['origin','salida'],['destination','llegada']] as const).map(([side,label]) => {
-    const d = state[side].details
-    const needed = [!d.propertyType ? 'casa o departamento' : '',
-      d.floor === null || !Number.isInteger(d.floor) || d.floor < 0 ? 'piso de los muebles' : '',
-      d.hasElevator === null && !(d.propertyType === 'casa' && d.floor === 0) ? 'si se usa ascensor' : '',
-    ].filter(Boolean)
-    return {label,needed}
-  }).filter(x=>x.needed.length)
-  if (access.length) questions.push(`De los accesos, ¿me aclaras ${access.map(x=>`${x.label}: ${x.needed.join(', ')}`).join('; ')}?`)
+  const access = accessQuestion(state)
+  if (access) questions.push(access)
 
   const originDistance = state.origin.details.parkingDistance
   const destinationDistance = state.destination.details.parkingDistance
-  const parkingSides = [originDistance === null || !Number.isFinite(originDistance) ? 'salida' : '',
-    destinationDistance === null || !Number.isFinite(destinationDistance) ? 'llegada' : ''].filter(Boolean)
-  if (parkingSides.length) questions.push(`¿Cuántos metros hay que caminar cargando desde el camión hasta la puerta en ${parkingSides.join(' y ')}? (0 si estaciona en la entrada)`)
+  const originMissing = originDistance === null || !Number.isFinite(originDistance)
+  const destMissing = destinationDistance === null || !Number.isFinite(destinationDistance)
+  if (originMissing || destMissing) {
+    const location = originMissing && destMissing ? 'en el origen y en el destino'
+      : originMissing ? 'en el origen' : 'en el destino'
+    questions.push(`¿Cuántos metros hay que caminar con los muebles desde el camión hasta la entrada ${location}? Si se estaciona junto a la puerta, responde 0 metros.`)
+  }
 
   if (!state.items.length) questions.push('¿Qué muebles o artículos trasladamos y cuántos de cada uno? También puedes enviarlos en fotos después.')
   const pendingItems = state.pendingInventory.filter(p => !/\b(?:ascensor|piso|estacionamiento|pregunta|respuesta)\b/i.test(p.sourceLabel))
-  if (pendingItems.length) questions.push(`¿Qué artículos son «${pendingItems.map(p => p.sourceLabel).join('», «')}»?`)
+  if (pendingItems.length) questions.push(`¿Me aclaras qué artículos son ${pendingItems.map(p => `«${p.sourceLabel}»`).join(', ')}?`)
 
   const answered = new Set(state.intake?.answeredQuoteFields || [])
   const services = [!answered.has('packing') ? 'embalaje' : '',
-    !answered.has('disassembly') ? 'desarmado' : '', !answered.has('assembly') ? 'armado' : ''].filter(Boolean)
-  if (services.length) questions.push(`¿Necesitas ${services.join(', ')} de muebles? Indica cuáles o simplemente «no».`)
+    !answered.has('disassembly') ? 'desarmado de muebles' : '',
+    !answered.has('assembly') ? 'armado de muebles' : ''].filter(Boolean)
+  if (services.length) questions.push(`¿Necesitas alguno de estos servicios: ${joinSpanish(services)}? Si no, responde «no».`)
   return questions
 }
 
@@ -141,23 +189,28 @@ export function pendingWithoutInventory(state: QuoteSessionState): string[] {
 export function missingQuoteMessage(state: QuoteSessionState): string | null {
   const pending = missingQuoteQuestions(state)
   if (!pending.length) return null
-  return ['¡Gracias! 😊 Solo necesito aclarar esto:', ...pending.map((question, index) => `${index + 1}. ${question}`),
-    'Respóndeme como quieras, todo junto.'].join('\n')
+  return ['¡Gracias! 😊 Solo me falta aclarar esto:', ...pending.map((question, index) => `${index + 1}. ${question}`),
+    'Puedes responder todo junto, con tus propias palabras.'].join('\n')
 }
 
-/** Reformulación humana, no repetir literalmente la pregunta incomprendida.
- * Puede usarse cuando el cliente dice «no entendí», incluso si ya contestó
- * otros puntos en el mismo mensaje.
- */
-export function paraphraseQuoteQuestion(question: string): string {
-  if (/ascensor|piso/i.test(question)) return 'Por ejemplo, en la salida: «departamento, piso 5, con ascensor». En la llegada: «casa, planta baja». ¿Cómo es en tu caso?'
-  if (/metro|caminar|estaciona/i.test(question)) return 'Me refiero al trayecto desde donde queda estacionado el camión hasta la puerta. ¿Es justo al lado (0 m), a unos 10 m, 20 m o más?'
-  if (/embalar|desarmar|armar/i.test(question)) return '¿Quieres que nosotros envolvamos cosas para protegerlas o que desmontemos y volvamos a montar algún mueble? Si no, basta con decir «no». '
-  if (/artículo|mueble/i.test(question)) return 'Para calcular cuánto ocupa la mudanza, dime qué cosas llevas y cuántas; por ejemplo «una cama y dos refrigeradores». '
-  if (/boleta|factura/i.test(question)) return '¿El comprobante lo necesitas a tu nombre (boleta) o a nombre de una empresa (factura)?'
-  if (/fecha/i.test(question)) return '¿Ya tienes un día para la mudanza o podríamos coordinar otro?'
-  if (/dirección|calle|comuna/i.test(question)) return 'Necesito la dirección para retirar tus cosas y la dirección donde las dejaremos: calle, número y comuna de cada lugar.'
-  return `Te lo pregunto de otra forma: ${question.replace(/^¿/, '').replace(/\?$/, '').replace(/me indicas|me confirmas|me aclaras/i, 'puedes decirme')}?`
+/** Reformula según lo que realmente falta, no según etiquetas técnicas. */
+export function paraphraseQuoteQuestion(question: string, state?: QuoteSessionState): string {
+  if (/ascensor|piso|accesos|inmueble|casa|departamento|bodega/i.test(question)) {
+    if (state) {
+      const pending = accessQuestion(state)
+      if (pending) return `Me refiero a los lugares donde recogeremos y entregaremos tus cosas. ${pending}`
+      return 'Perfecto, con eso ya están claros los accesos.'
+    }
+    return 'Me refiero a ambos lugares: ¿son casas o departamentos? Si alguno es departamento, dime en qué piso está y si tiene ascensor.'
+  }
+  if (/metro|caminar|estaciona/i.test(question)) return 'Me refiero a la distancia que tendremos que caminar con tus cosas entre el camión y la entrada. ¿Cuántos metros son aproximadamente? Si estacionamos justo al lado, son 0 metros.'
+  if (/embal|desarm|armar/i.test(question)) return '¿Quieres que protejamos tus cosas con embalaje o que desmontemos y volvamos a montar algún mueble? Si no necesitas estos servicios, basta con decir «no».'
+  if (/artículo|mueble/i.test(question)) return '¿Qué cosas debemos trasladar y cuántas de cada una? Por ejemplo: una cama y dos refrigeradores.'
+  if (/boleta|factura|razón social|RUT/i.test(question)) return '¿Necesitas boleta o factura? Si es factura, indícame la razón social y el RUT de la empresa.'
+  if (/fecha|hora/i.test(question)) return '¿Qué día y a qué hora te gustaría hacer la mudanza? Dime también si tienes flexibilidad para cambiar la fecha.'
+  if (/dirección|calle|comuna|región/i.test(question)) return '¿Me indicas la dirección donde recogeremos tus cosas y la dirección donde las entregaremos, con calle, número, comuna y región?'
+  if (/nombre|correo/i.test(question)) return 'Para preparar la cotización, ¿me dices tu nombre, correo electrónico y RUT?'
+  return 'Disculpa, no me expliqué bien. ¿Puedes contarme qué parte de la pregunta te resulta confusa?'
 }
 
 export function isQuoteConfusion(text: string): boolean {

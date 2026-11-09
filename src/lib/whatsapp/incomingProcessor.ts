@@ -378,6 +378,11 @@ async function sendApprovedQuestions(
 async function clarifyNaturally(
   hint: string, state: QuoteSessionRow['state'], text: string, conversationId: string,
 ): Promise<string> {
+  // Los accesos se explican a partir de campos pendientes reales. Esta respuesta
+  // determinista evita que la IA vuelva a preguntar el piso o ascensor ya informados.
+  if (/\b(?:origen|destino|ascensor|piso|inmueble)\b/i.test(hint)) {
+    return paraphraseQuoteQuestion(hint, state)
+  }
   try {
     const { data, usage } = await createStructuredResponseWithUsage<{ message: string }>({
       model: process.env.OPENAI_NLP_MODEL || 'gpt-6.1-sol',
@@ -387,7 +392,8 @@ async function clarifyNaturally(
         properties: { message: { type: 'string' } }, required: ['message'] },
       instructions: `Eres el cotizador Yo Me Encargo. El cliente no entendió una pregunta.
 Reformula en español chileno natural, con palabras distintas y un ejemplo concreto.
-Máximo dos frases, 260 caracteres, una sola pregunta. Nunca repitas el texto literal de la pregunta.
+Máximo dos frases, 260 caracteres. Usa preguntas gramaticalmente completas.
+Nunca incluyas etiquetas de estado como «salida:», «llegada:», «piso de los muebles» o listas con punto y coma.
 No solicites datos que el cliente ya entregó; nunca interpretes «piso» o «ascensor» como un artículo.
 No generes cotizaciones, precios ni prometas servicios fuera de la pregunta.`,
       input: [{ role: 'user', content: JSON.stringify({
@@ -398,7 +404,7 @@ No generes cotizaciones, precios ni prometas servicios fuera de la pregunta.`,
     })
     await addUsage(conversationId, usage).catch(console.warn)
     const sentence = data.message?.trim()
-    return sentence && sentence.length <= 300 ? sentence : hint
+    return sentence && sentence.length <= 300 && !/(?:salida|llegada)\s*:|piso de los muebles|[;{}]/i.test(sentence) ? sentence : hint
   } catch (error) {
     console.warn('[WhatsApp][clarificación] Alternativa local:', error)
     return hint
@@ -406,7 +412,7 @@ No generes cotizaciones, precios ni prometas servicios fuera de la pregunta.`,
 }
 
 /** Si se refiere a la segunda pregunta, usamos la segunda de verdad. */
-function misunderstoodQuestion(text: string, questions: string[]): string | null {
+function misunderstoodQuestion(text: string, questions: string[], state?: QuoteSessionRow['state']): string | null {
   if (!isQuoteConfusion(text)) return null
   const ordinal = /\b(?:la\s+)?(?:pregunta\s*)?(\d{1,2})\b/i.exec(text)?.[1]
   const secondBatch = questions[0] === QUOTE_INITIAL_QUESTIONS[4]
@@ -422,7 +428,7 @@ function misunderstoodQuestion(text: string, questions: string[]): string | null
   }
   // Si la persona no menciona número, preferir lo último que quedó sin resolver.
   const q = questions[index] || questions[0] || null
-  return q ? paraphraseQuoteQuestion(q).trim() : null
+  return q ? paraphraseQuoteQuestion(q, state).trim() : null
 }
 
 async function finishApprovedQuote(session: QuoteSessionRow, conversationId: string, to: string) {
@@ -520,7 +526,7 @@ async function processApprovedQuoteTurn(
   }
   if (step === 'questions') {
     const context = session.state.intake?.lastQuestionContext || QUOTE_INITIAL_QUESTIONS
-    const clarified = misunderstoodQuestion(text, context)
+    const clarified = misunderstoodQuestion(text, context, session.state)
     const shortConfusionOnly = clarified && text.length < 125 &&
       !/\b(?:no|s[ií])\s+a\s+la\s+(?:primera|segunda|tercera)\b/i.test(text) &&
       !/\b(?:boleta|factura|piso\s*\d+|departamento|casa\s*\d+|\d+\s*(?:m|metro)|embal|armar|desarmar)\b/i.test(text)
