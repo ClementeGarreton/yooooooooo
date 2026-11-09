@@ -72,6 +72,13 @@ export interface QuotePricingInput {
   pricing: PricingConfig
 }
 
+/** Partidas del cálculo REAL: se generan durante la misma operación que calcula el total. */
+export interface QuotePriceComponent {
+  key: string
+  label: string
+  amount: number
+}
+
 export interface QuotePricingResult {
   totalVolume: number
   totalWeight: number
@@ -82,6 +89,7 @@ export interface QuotePricingResult {
   /** Las anteriores más los ayudantes que sumó el cliente, topeado en `crew.maxPeople`. */
   totalCrew: number
   stairTrips: number
+  priceBreakdown: QuotePriceComponent[]
 }
 
 export type DateSurchargeKind = 'saturday' | 'sunday' | 'holiday'
@@ -149,66 +157,54 @@ export function calculateQuote(input: QuotePricingInput): QuotePricingResult {
   const recommendedVehicle = recommendVehicle(totalVolume)
   const distance = Number.isFinite(input.distanceKm) ? input.distanceKm : 0
 
-  let basePrice = pricing.basePrice
+  const components: QuotePriceComponent[] = []
+  let basePrice = 0
+  const charge = (key: string, label: string, amount: number) => {
+    if (!Number.isFinite(amount)) throw new Error(`Partida inválida: ${key}`)
+    components.push({ key, label, amount })
+    basePrice += amount
+  }
+  const pesos = (amount: number) => Math.round(amount).toLocaleString('es-CL')
 
-  // Precio por volumen
-  basePrice += totalVolume * pricing.pricePerCubicMeter
+  charge('base', 'Tarifa base', pricing.basePrice)
+  charge('volume', `Volumen: ${totalVolume.toFixed(2)} m³ × $${pesos(pricing.pricePerCubicMeter)}/m³`,
+    totalVolume * pricing.pricePerCubicMeter)
 
-  // Ajuste por distancia (solo se cobran los km posteriores a los gratis)
   const freeKilometers = pricing.freeKilometers ?? 50
   const chargeableKm = Math.max(0, distance - freeKilometers)
-  basePrice += chargeableKm * pricing.pricePerKilometer
+  charge('distance', `Ruta: ${distance.toFixed(2)} km (${freeKilometers} incluidos; ${chargeableKm.toFixed(2)} facturables) × $${pesos(pricing.pricePerKilometer)}/km`,
+    chargeableKm * pricing.pricePerKilometer)
 
-  // Ajuste por piso sin ascensor. Se multiplica por los viajes que implica la carga:
-  // antes era plano y subir un velador a un 3º costaba igual que subir treinta bultos.
   const trips = stairTrips(items, pricing.stairs)
-  basePrice += stairsCost(
-    input.origin?.floor,
-    input.origin?.hasElevator,
-    items,
-    pricing.floorSurcharge,
-    pricing.stairs
-  )
-  basePrice += stairsCost(
-    input.destination?.floor,
-    input.destination?.hasElevator,
-    items,
-    pricing.floorSurcharge,
-    pricing.stairs
-  )
+  const floorsOrigin = Math.max(0, Number(input.origin?.floor) || 0)
+  const floorsDestination = Math.max(0, Number(input.destination?.floor) || 0)
+  charge('stairs_origin', `Escaleras origen: ${floorsOrigin} piso(s), ${trips} viaje(s), $${pesos(pricing.floorSurcharge)}/piso/viaje`,
+    stairsCost(input.origin?.floor, input.origin?.hasElevator, items, pricing.floorSurcharge, pricing.stairs))
+  charge('stairs_destination', `Escaleras destino: ${floorsDestination} piso(s), ${trips} viaje(s), $${pesos(pricing.floorSurcharge)}/piso/viaje`,
+    stairsCost(input.destination?.floor, input.destination?.hasElevator, items, pricing.floorSurcharge, pricing.stairs))
 
-  // Cuadrilla: el bulto más pesado define cuánta gente hace falta, y el cliente puede
-  // sumar ayudantes por encima de ese mínimo.
   const crewByWeight = requiredPeople(items, pricing.crew)
-  const totalCrew = Math.min(
-    pricing.crew.maxPeople,
-    crewByWeight + Math.max(0, services.extraHelpers || 0)
-  )
-  basePrice += crewCost(totalCrew, pricing.crew)
+  const totalCrew = Math.min(pricing.crew.maxPeople,
+    crewByWeight + Math.max(0, services.extraHelpers || 0))
+  charge('crew', `Cuadrilla: ${totalCrew} persona(s), ${pricing.crew.includedPeople} incluida(s)`,
+    crewCost(totalCrew, pricing.crew))
 
-  // Recargo por día: sábado, domingo o feriado, cada uno con su porcentaje del panel.
+  // Mantener el ORDEN de la fórmula anterior: el recargo de fecha se aplica aquí,
+  // antes de servicios adicionales, embalajes y descuentos.
   const recargoDia = dateSurcharge(input.dateTime, pricing.timeSurcharges)
   if (recargoDia.percent > 0) {
-    basePrice += (basePrice * recargoDia.percent) / 100
+    charge('day_surcharge', `Recargo ${recargoDia.kind || 'fecha'}: ${recargoDia.percent}%`,
+      (basePrice * recargoDia.percent) / 100)
   }
 
-  // Servicios adicionales
-  if (services.disassembly) basePrice += pricing.additionalServices.disassembly
-  if (services.assembly) basePrice += pricing.additionalServices.assembly
-  // Tarifas globales por contratación del servicio, editables en Configuración > Precios.
-  // Son distintas del embalaje especial por ítem (se cotiza aparte).
-  if (services.packing) basePrice += pricing.additionalServices.packing
-  if (services.unpacking) basePrice += pricing.additionalServices.unpacking
-
-  // Desarmado de refrigerador: va acá, junto al desarme y el armado, porque es el mismo
-  // tipo de cobro (mano de obra) y sigue su misma suerte —recargo del día y
-  // descuento por flexibilidad—. Se exige que el refrigerador SIGA en la lista: si el
-  // cliente lo marcó y después borró el item, el cargo desaparece.
+  if (services.disassembly) charge('disassembly', 'Desarmado', pricing.additionalServices.disassembly)
+  if (services.assembly) charge('assembly', 'Armado', pricing.additionalServices.assembly)
+  if (services.packing) charge('packing', 'Embalaje', pricing.additionalServices.packing)
+  if (services.unpacking) charge('unpacking', 'Desembalaje', pricing.additionalServices.unpacking)
   if (services.fridgeDisassembly && hasFridge(items)) {
-    basePrice += pricing.additionalServices.fridgeDisassembly
+    charge('fridge_disassembly', 'Desarmado de refrigerador', pricing.additionalServices.fridgeDisassembly)
   }
 
-  // Embalaje especial: por volumen de los items que lo llevan, no por item.
   const packagingCost = items
     .filter((item) => item.packaging && item.packaging.type !== 'none')
     .reduce((acc, item) => {
@@ -216,36 +212,42 @@ export function calculateQuote(input: QuotePricingInput): QuotePricingResult {
       const itemPackagingCost = item.packaging?.pricePerUnit || 0
       return acc + itemPackagingCost * itemVolume
     }, 0)
+  if (packagingCost) charge('special_packaging', 'Embalaje especial por volumen', packagingCost)
 
-  basePrice += packagingCost
-
-  // Items frágiles o de vidrio
   const fragileCount = items.filter((item) => item.isFragile || item.isGlass).length
-  basePrice += fragileCount * pricing.specialPackaging.fragile
+  if (fragileCount) charge('fragile', `Artículos frágiles: ${fragileCount} tipo(s)`,
+    fragileCount * pricing.specialPackaging.fragile)
 
-  // Descuento por flexibilidad
   if (input.isFlexible) {
-    basePrice -= (basePrice * pricing.discounts.flexibility) / 100
+    charge('flexibility_discount', `Descuento por flexibilidad: ${pricing.discounts.flexibility}%`,
+      -(basePrice * pricing.discounts.flexibility) / 100)
   }
 
-  // Recargo por exceso de volumen y Priority: PLANOS y al final, después del descuento
-  // por flexibilidad y del recargo del día.
-  //
-  // Van acá y no arriba porque Tomás los definió como montos fijos ($29.990 y $99.990):
-  // sumarlos antes haría que el recargo del día y el descuento por flexibilidad los
-  // movieran, y dejarían de ser el número que él dijo.
-  basePrice += overCapacitySurcharge(totalVolume, pricing.additionalServices)
-  if (services.priority) basePrice += pricing.additionalServices.priority
+  const excess = overCapacitySurcharge(totalVolume, pricing.additionalServices)
+  if (excess) charge('overcapacity', 'Recargo por exceso de volumen', excess)
+  if (services.priority) charge('priority', 'Servicio prioritario', pricing.additionalServices.priority)
 
-  // Empresa: sin recargo. Los precios ya incluyen IVA (Tomás, 23-10-2026).
+  const estimatedPrice = Math.round(basePrice)
+  // Redondeo por acumulación: suma EXACTA de partidas en pesos = total cobrado.
+  let runningExact = 0
+  let runningRounded = 0
+  const priceBreakdown = components.map((component) => {
+    runningExact += component.amount
+    const cumulativeRounded = Math.round(runningExact)
+    const amount = cumulativeRounded - runningRounded
+    runningRounded = cumulativeRounded
+    return { ...component, amount }
+  })
+  if (runningRounded !== estimatedPrice) throw new Error('Descuadre del desglose de cotización')
 
   return {
     totalVolume,
     totalWeight,
-    estimatedPrice: Math.round(basePrice),
+    estimatedPrice,
     recommendedVehicle,
     requiredCrew: crewByWeight,
     totalCrew,
     stairTrips: trips,
+    priceBreakdown,
   }
 }

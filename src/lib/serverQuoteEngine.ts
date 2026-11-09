@@ -114,6 +114,7 @@ export async function calculateSessionQuote(state: QuoteSessionState) {
     totalVolume: Math.round(result.totalVolume * 100) / 100,
     totalWeight: Math.round(result.totalWeight * 100) / 100,
     totalDistance,
+    priceBreakdown: result.priceBreakdown,
     recommendedVehicle: result.recommendedVehicle,
     requiredCrew: result.requiredCrew,
     totalCrew: result.totalCrew,
@@ -124,73 +125,117 @@ export async function calculateSessionQuote(state: QuoteSessionState) {
 function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnType<typeof calculateSessionQuote>>, quoteId: string, photos: string[] = []) {
   const pdf = new jsPDF('p', 'mm', 'a4')
   const width = pdf.internal.pageSize.getWidth()
-  let y = 18
+  const money = (amount: number) => `$${amount.toLocaleString('es-CL')}`
+  let y = 46
 
-  pdf.setFillColor(111, 168, 220)
-  pdf.rect(0, 0, width, 38, 'F')
-  pdf.setTextColor(255, 255, 255)
-  pdf.setFont('helvetica', 'bold')
-  pdf.setFontSize(22)
-  pdf.text('COTIZACION DE MUDANZA', width / 2, 15, { align: 'center' })
-  pdf.setFontSize(11)
-  pdf.setFont('helvetica', 'normal')
-  pdf.text(`Yo Me Encargo · ${quoteId}`, width / 2, 25, { align: 'center' })
-  pdf.text(`Emitida: ${new Date().toLocaleDateString('es-CL')}`, width / 2, 32, { align: 'center' })
-
-  y = 50
-  pdf.setTextColor(20, 20, 20)
-  pdf.setFont('helvetica', 'bold')
-  pdf.setFontSize(14)
-  pdf.text('Cliente', 18, y)
-  y += 8
-  pdf.setFont('helvetica', 'normal')
-  pdf.setFontSize(10)
-  pdf.text(`Nombre: ${state.personalInfo.name || 'No informado'}`, 18, y); y += 6
-  pdf.text(`Email: ${state.personalInfo.email || 'No informado'}`, 18, y); y += 6
-  pdf.text(`Telefono: ${state.personalInfo.phone}`, 18, y); y += 6
-  pdf.text(`Documento solicitado: ${state.taxDocument || 'Por definir'}`, 18, y); y += 9
-
-  pdf.setFont('helvetica', 'bold')
-  pdf.setFontSize(14)
-  pdf.text('Mudanza', 18, y); y += 8
-  pdf.setFont('helvetica', 'normal')
-  pdf.setFontSize(10)
-  pdf.text(`Fecha: ${state.schedule.date || 'Por confirmar'} · Hora: ${state.schedule.time || 'Por confirmar'}`, 18, y); y += 6
-  pdf.text(`Origen: ${addressText(state.origin.address)}`, 18, y, { maxWidth: 175 }); y += 8
-  pdf.text(`Destino: ${addressText(state.destination.address)}`, 18, y, { maxWidth: 175 }); y += 8
-  pdf.text(`Distancia estimada: ${quote.totalDistance} km`, 18, y); y += 6
-  pdf.text(`Acarreo en retiro: ${state.origin.details.parkingDistance ?? 'Sin dato'} m del camión a la puerta`, 18, y); y += 6
-  pdf.text(`Acarreo en entrega: ${state.destination.details.parkingDistance ?? 'Sin dato'} m del camión a la puerta`, 18, y); y += 9
-
-  pdf.setFont('helvetica', 'bold')
-  pdf.setFontSize(14)
-  pdf.text('Inventario', 18, y); y += 7
-  pdf.setFontSize(9)
-  pdf.setFont('helvetica', 'normal')
-  for (const item of quote.items) {
-    if (y > 250) { pdf.addPage(); y = 20 }
-    pdf.text(`${item.quantity} x ${item.name} · ${(item.volume * item.quantity).toFixed(2)} m3`, 20, y)
-    y += 5.5
+  const drawHeader = (continuation = false) => {
+    pdf.setFillColor(111, 168, 220)
+    pdf.rect(0, 0, width, continuation ? 25 : 38, 'F')
+    pdf.setTextColor(255, 255, 255)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(continuation ? 14 : 21)
+    pdf.text('COTIZACION DE MUDANZA', width / 2, continuation ? 15 : 15, { align: 'center' })
+    if (!continuation) {
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(10)
+      pdf.text(`Yo Me Encargo - ${quoteId}`, width / 2, 25, { align: 'center' })
+      pdf.text(`Emitida: ${new Date().toLocaleDateString('es-CL')}`, width / 2, 32, { align: 'center' })
+    }
+    pdf.setTextColor(20, 20, 20)
+  }
+  const ensureSpace = (needed = 9) => {
+    if (y + needed <= 265) return
+    pdf.addPage()
+    drawHeader(true)
+    y = 34
+  }
+  const section = (title: string) => {
+    ensureSpace(19)
+    y += 3
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(12.5)
+    pdf.text(title, 18, y)
+    y += 7
+  }
+  const line = (text: string, indent = 18, fontSize = 9.5, bold = false) => {
+    pdf.setFont('helvetica', bold ? 'bold' : 'normal')
+    pdf.setFontSize(fontSize)
+    const wrapped = pdf.splitTextToSize(text, width - indent - 18) as string[]
+    for (const part of wrapped) {
+      ensureSpace(5.3)
+      pdf.text(part, indent, y)
+      y += 5.3
+    }
+  }
+  const access = (endpoint: 'origin' | 'destination') => {
+    const details = state[endpoint].details
+    const label = endpoint === 'origin' ? 'Origen' : 'Destino'
+    const floor = details.floor === null ? 'Sin informar' : `${details.floor}° piso`
+    const elevator = details.hasElevator === null ? 'Sin confirmar' : (details.hasElevator ? 'Sí' : 'No')
+    const carry = details.parkingDistance === null ? 'Sin informar' : `${details.parkingDistance} m`
+    line(`${label}: ${floor} | Ascensor: ${elevator} | Acarreo: ${carry}`)
   }
 
-  y += 4
-  pdf.setDrawColor(220, 220, 220)
+  drawHeader()
+  section('Cliente')
+  line(`Nombre: ${state.personalInfo.name || 'No informado'} | Teléfono: ${state.personalInfo.phone || 'No informado'}`)
+  line(`Correo: ${state.personalInfo.email || 'No informado'} | Documento: ${state.taxDocument || 'Por definir'}`)
+
+  section('Mudanza')
+  line(`Fecha: ${state.schedule.date || 'Por confirmar'} | Hora: ${state.schedule.time || 'Por confirmar'}`)
+  line(`Origen: ${addressText(state.origin.address)}`)
+  line(`Destino: ${addressText(state.destination.address)}`)
+  line(`Distancia de ruta: ${quote.totalDistance.toFixed(2)} km`)
+
+  section('Accesos y servicios')
+  access('origin')
+  access('destination')
+  const responses = state.intake?.tommyDetails
+  if (responses?.escaleras) line(`Escaleras declaradas: ${responses.escaleras}`)
+  const noStairCarry = state.intake?.tommyVersion === 1 && responses?.escaleras === 'No'
+  if (noStairCarry) {
+    line('Criterio de cálculo: no se agregó recargo por escaleras, aunque exista un piso declarado.', 18, 8.5)
+  } else if ([state.origin, state.destination].some((p) => (p.details.floor || 0) > 0 && p.details.hasElevator === null)) {
+    line('Atención: hay un piso con ascensor sin confirmar; la fórmula aplica recargo de escaleras hasta verificar el acceso.', 18, 8.5)
+  }
+  if (responses?.acarreo) line(`Distancia de carga declarada: ${responses.acarreo}`)
+  const packDetail = responses?.embalaje || ''
+  const observations = state.additionalServices.observations === '__pending__' ? '' : (state.additionalServices.observations || '')
+  const packingDescription = state.additionalServices.packing
+    ? `Sí${packDetail && packDetail !== 'Sí' ? ` - ${packDetail}` : observations ? ` - ${observations}` : ''}`
+    : 'No'
+  line(`Embalaje: ${packingDescription}`)
+  line(`Desarmado: ${state.additionalServices.disassembly ? 'Sí' : 'No'} | Armado: ${state.additionalServices.assembly ? 'Sí' : 'No'} | Desembalaje: ${state.additionalServices.unpacking ? 'Sí' : 'No'}`)
+
+  section('Inventario')
+  for (const item of quote.items) {
+    line(`${item.quantity} x ${item.name} - ${(item.volume * item.quantity).toFixed(2)} m³`, 20, 9)
+  }
+  line(`Volumen total: ${quote.totalVolume.toFixed(2)} m³ | Peso total: ${quote.totalWeight.toFixed(0)} kg`, 18, 9.5, true)
+  line(`Vehículo sugerido: ${quote.recommendedVehicle}`)
+  line(`Cuadrilla estimada: ${quote.totalCrew} persona(s)`)
+
+  section('Desglose del precio estimado')
+  line('Importes calculados con las tarifas vigentes. Los cargos de valor $0 se muestran para mayor claridad.', 18, 8.5)
+  let total = 0
+  for (const component of quote.priceBreakdown) {
+    total += component.amount
+    line(`${component.label}: ${money(component.amount)}`, 20, 9)
+  }
+  if (total !== quote.estimatedPrice) throw new Error('La suma de partidas no coincide con el precio estimado')
+  ensureSpace(20)
+  y += 3
+  pdf.setDrawColor(180, 180, 180)
   pdf.line(18, y, width - 18, y)
   y += 9
   pdf.setFont('helvetica', 'bold')
-  pdf.setFontSize(12)
-  pdf.text(`Volumen estimado: ${quote.totalVolume.toFixed(2)} m3`, 18, y); y += 7
-  pdf.text(`Peso estimado: ${quote.totalWeight.toFixed(0)} kg`, 18, y); y += 7
-  pdf.text(`Vehiculo sugerido: ${quote.recommendedVehicle}`, 18, y); y += 9
-  pdf.setFontSize(20)
+  pdf.setFontSize(17)
   pdf.setTextColor(63, 98, 18)
-  pdf.text(`Precio estimado: $${quote.estimatedPrice.toLocaleString('es-CL')}`, 18, y)
-
-  pdf.setTextColor(80, 80, 80)
-  pdf.setFont('helvetica', 'normal')
-  pdf.setFontSize(8)
-  pdf.text('Valor estimativo sujeto a validacion de volumen, accesos, disponibilidad y condiciones reales del servicio.', 18, 282, { maxWidth: 175 })
-  pdf.text('Afina los detalles de tu mudanza con nuestro ejecutivo en WhatsApp: +56 9 5439 0267', 18, 288, { maxWidth: 175 })
+  pdf.text(`TOTAL ESTIMADO: ${money(quote.estimatedPrice)}`, 18, y)
+  y += 9
+  pdf.setTextColor(20, 20, 20)
+  line('Las distancias de acarreo se registran como antecedente: la fórmula actual no les aplica un cargo independiente.', 18, 8)
+  line('Sujeto a revisión humana de volumen, accesos, embalaje, disponibilidad y condiciones reales.', 18, 8)
 
   // Anexos del expediente: incluir hasta 12 fotografías del inventario sin alterar
   // precios, kilometraje, ni la integración de prospectos que mantiene el template.
@@ -223,6 +268,18 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
     }
   }
 
+  // Pie estable en todas las páginas, sin tapar el desglose.
+  const pages = pdf.getNumberOfPages()
+  for (let i = 1; i <= pages; i++) {
+    pdf.setPage(i)
+    pdf.setDrawColor(225, 225, 225)
+    pdf.line(18, 276, width - 18, 276)
+    pdf.setTextColor(110, 110, 110)
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(8)
+    pdf.text('Yo Me Encargo - Cotización preliminar sujeta a revisión humana', 18, 282)
+    pdf.text(`${i}/${pages}`, width - 18, 282, { align: 'right' })
+  }
   return Buffer.from(pdf.output('arraybuffer'))
 }
 
