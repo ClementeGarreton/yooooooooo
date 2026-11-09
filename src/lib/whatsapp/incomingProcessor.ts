@@ -1,5 +1,6 @@
 import { parseRawCustomerQuote, mergeRawQuote, rawQuoteGaps, nextShortQuestion, QUOTE_INTAKE_QUESTIONS } from '@/lib/whatsapp/rawNlpQuote'
-import { QUOTE_FIRST_MESSAGE, QUOTE_PHOTO_MESSAGE, inventoryMessage, missingQuoteMessage, missingQuoteQuestions, quoteFlowStep, withQuoteFlowStep, normalizeQuoteCustomerReply, isPhotoFinish, isInventoryConfirm } from '@/lib/whatsapp/quoteConversation'
+import { createStructuredResponseWithUsage } from '@/lib/ai/openai'
+import { QUOTE_FIRST_MESSAGE, QUOTE_SECOND_MESSAGE, QUOTE_INITIAL_QUESTIONS, QUOTE_PHOTO_MESSAGE, inventoryMessage, missingQuoteMessage, missingQuoteQuestions, pendingWithoutInventory, paraphraseQuoteQuestion, isQuoteConfusion, applyContextualYesNo, quoteFlowStep, withQuoteFlowStep, normalizeQuoteCustomerReply, isPhotoFinish, isInventoryConfirm } from '@/lib/whatsapp/quoteConversation'
 import { messageContext, conversationKey, customerPhone,
   downloadChannelImage as downloadWhatsAppMediaAsDataUrl,
   sendChannelDocument as sendWhatsAppDocument,
@@ -338,23 +339,81 @@ async function finishTommyQuote(session: QuoteSessionRow, conversationId: string
   }
 }
 
-/** Flujo de cuatro mensajes aprobado: preguntas -> faltantes (si los hay) -> fotos -> inventario. */
-const INITIAL_QUESTIONS = [
-  'Nombre, Email y Rut. Si eres empresa escribe boleta o factura y razón social.',
-  '¿De qué calle hasta qué calle es el traslado? Incluye número, comuna y región.',
-  'Lista de artículos a trasladar.',
-  'Fecha y hora del flete. Incluye un SI o NO si puedes cambiar la fecha.',
-  '¿Hay ascensor o escalera y en qué piso? Si es casa indícalo.',
-  '¿A qué distancia están las entradas del estacionamiento en el origen y destino respectivamente?',
-  '¿Necesitas que embalemos algo? Nombra qué artículos.',
-  '¿Necesitas que desarmemos y armemos muebles? Nómbralos.',
-]
+/** Se guarda qué se preguntó para que «la segunda» refiera al mensaje real. */
+async function sendApprovedQuestions(
+  session: QuoteSessionRow, conversationId: string, to: string,
+  initial = false,
+): Promise<void> {
+  if (initial) {
+    await mutateQuoteSessionAtomically(session.id, current => {
+      current.intake!.lastQuestionContext = QUOTE_INITIAL_QUESTIONS
+      current.intake!.nlpQuestionCount = 1
+      return current
+    })
+    await sendAndLog(conversationId, to, QUOTE_FIRST_MESSAGE)
+    await sendAndLog(conversationId, to, QUOTE_SECOND_MESSAGE)
+    return
+  }
+  const questions = missingQuoteQuestions(session.state)
+  if (!questions.length) return
+  await mutateQuoteSessionAtomically(session.id, current => {
+    current.intake!.lastQuestionContext = questions
+    return current
+  })
+  await sendAndLog(conversationId, to, missingQuoteMessage(session.state)!)
+}
+
+/** GPT reformula con el contexto, con alternativa determinista si OpenAI falla. */
+async function clarifyNaturally(
+  hint: string, state: QuoteSessionRow['state'], text: string, conversationId: string,
+): Promise<string> {
+  try {
+    const { data, usage } = await createStructuredResponseWithUsage<{ message: string }>({
+      model: process.env.OPENAI_NLP_MODEL || 'gpt-6.1-sol',
+      reasoningEffort: 'low', ignoreGlobalReasoningEffort: true,
+      schemaName: 'whatsapp_short_clarification', maxOutputTokens: 250,
+      schema: { type: 'object', additionalProperties: false,
+        properties: { message: { type: 'string' } }, required: ['message'] },
+      instructions: `Eres el cotizador Yo Me Encargo. El cliente no entendió una pregunta.
+Reformula en español chileno natural, con palabras distintas y un ejemplo concreto.
+Máximo dos frases, 260 caracteres, una sola pregunta. Nunca repitas el texto literal de la pregunta.
+No solicites datos que el cliente ya entregó; nunca interpretes «piso» o «ascensor» como un artículo.
+No generes cotizaciones, precios ni prometas servicios fuera de la pregunta.`,
+      input: [{ role: 'user', content: JSON.stringify({
+        pista: hint, mensajeDelCliente: text,
+        accesos: { origen: state.origin.details, destino: state.destination.details },
+        fecha: state.schedule, servicios: state.additionalServices,
+      }) }],
+    })
+    await addUsage(conversationId, usage).catch(console.warn)
+    const sentence = data.message?.trim()
+    return sentence && sentence.length <= 300 ? sentence : hint
+  } catch (error) {
+    console.warn('[WhatsApp][clarificación] Alternativa local:', error)
+    return hint
+  }
+}
+
+/** Si se refiere a la segunda pregunta, usamos la segunda de verdad. */
+function misunderstoodQuestion(text: string, questions: string[]): string | null {
+  if (!isQuoteConfusion(text)) return null
+  const ordinal = /\b(?:la\s+)?(?:pregunta\s*)?(\d{1,2})\b/i.exec(text)?.[1]
+  let index = ordinal ? Number(ordinal) - 1 : -1
+  if (index < 0) {
+    if (/\b(?:segunda|2da)\b/i.test(text)) index = 1
+    else if (/\b(?:primera|1ra)\b/i.test(text)) index = 0
+    else if (/\b(?:tercera|3ra)\b/i.test(text)) index = 2
+  }
+  // Si la persona no menciona número, preferir lo último que quedó sin resolver.
+  const q = questions[index] || questions[0] || null
+  return q ? paraphraseQuoteQuestion(q).trim() : null
+}
 
 async function finishApprovedQuote(session: QuoteSessionRow, conversationId: string, to: string) {
   const pending = missingQuoteMessage(session.state)
   if (pending) {
     const updated = await mutateQuoteSessionAtomically(session.id, current => withQuoteFlowStep(current, 'questions'))
-    await sendAndLog(conversationId, to, missingQuoteMessage(updated.state) || pending)
+    await sendApprovedQuestions(updated, conversationId, to)
     return
   }
   if (!canCloseInventory(session.state) ||
@@ -437,46 +496,62 @@ async function processApprovedQuoteTurn(
   const text = message.text.trim()
   if (message.type === 'image') {
     if (step === 'questions') {
-      await sendAndLog(conversationId, to, 'Primero terminemos los datos del traslado. Luego te pediré las fotos opcionales. 📸\n\n' + (missingQuoteMessage(session.state) || QUOTE_FIRST_MESSAGE))
+      await sendAndLog(conversationId, to, 'Las fotos van en el siguiente paso 📸. Antes terminemos los datos que faltan.')
       return
     }
     await processApprovedPhoto(session, conversationId, to, message)
     return
   }
   if (step === 'questions') {
-    if (/^(s[ií]|no)[.!\s]*$/i.test(text) && missingQuoteQuestions(session.state).length > 1) {
-      await sendAndLog(conversationId, to, missingQuoteMessage(session.state) || QUOTE_FIRST_MESSAGE)
+    const context = session.state.intake?.lastQuestionContext || QUOTE_INITIAL_QUESTIONS
+    const clarified = misunderstoodQuestion(text, context)
+    const shortConfusionOnly = clarified && text.length < 125 &&
+      !/\b(?:no|s[ií])\s+a\s+la\s+(?:primera|segunda|tercera)\b/i.test(text) &&
+      !/\b(?:boleta|factura|piso\s*\d+|departamento|casa\s*\d+|\d+\s*(?:m|metro)|embal|armar|desarmar)\b/i.test(text)
+    if (shortConfusionOnly) {
+      await sendAndLog(conversationId, to, await clarifyNaturally(clarified, session.state, text, conversationId))
       return
     }
     if (isInventoryConfirm(text)) {
-      await sendAndLog(conversationId, to, missingQuoteMessage(session.state) || QUOTE_FIRST_MESSAGE)
+      await sendApprovedQuestions(session, conversationId, to)
       return
     }
     const normalized = normalizeQuoteCustomerReply(text)
     if (!normalized) {
-      await sendAndLog(conversationId, to, missingQuoteMessage(session.state) || QUOTE_FIRST_MESSAGE)
+      await sendApprovedQuestions(session, conversationId, to)
       return
     }
-    const count = session.state.intake?.nlpQuestionCount || 1
-    const questions = count <= 1 ? INITIAL_QUESTIONS : missingQuoteQuestions(session.state)
     let parsed: Awaited<ReturnType<typeof parseRawCustomerQuote>>
     try {
-      parsed = await parseRawCustomerQuote(session.state, normalized, questions)
+      parsed = await parseRawCustomerQuote(session.state, normalized, context)
     } catch (error) {
       console.error('[WhatsApp][NLP] No se pudo interpretar el mensaje:', error)
       await sendAndLog(conversationId, to, 'No pude procesar el último mensaje. Tus respuestas anteriores están guardadas; reenvía solo este mensaje.')
       return
     }
     session = await mutateQuoteSessionAtomically(session.id, current => {
-      const merged = mergeRawQuote(current, parsed.data)
+      const merged = applyContextualYesNo(mergeRawQuote(current, parsed.data), text, context)
       merged.intake!.nlpLastRaw = text
-      merged.intake!.nlpQuestionCount = count + 1
+      merged.intake!.nlpQuestionCount = (merged.intake!.nlpQuestionCount || 1) + 1
       return merged
     })
     await addUsage(conversationId, parsed.usage).catch(console.warn)
-    const pending = missingQuoteMessage(session.state)
-    if (pending) {
-      await sendAndLog(conversationId, to, pending)
+    // El inventario también puede completarse mediante fotografías.
+    const pending = pendingWithoutInventory(session.state)
+    if (pending.length) {
+      const currentGaps = missingQuoteQuestions(session.state)
+      const clarifiedPending = clarified
+      if (clarifiedPending) {
+        await mutateQuoteSessionAtomically(session.id, current => {
+          current.intake!.lastQuestionContext = currentGaps
+          return current
+        })
+        const explanation = await clarifyNaturally(clarifiedPending, session.state, text, conversationId)
+        await sendAndLog(conversationId, to,
+          `Te explico 😊 ${explanation}\n\n${missingQuoteMessage(session.state) || ''}`)
+      } else {
+        await sendApprovedQuestions(session, conversationId, to)
+      }
     } else {
       session = await mutateQuoteSessionAtomically(session.id, current => withQuoteFlowStep(current, 'photos'))
       await sendAndLog(conversationId, to, QUOTE_PHOTO_MESSAGE)
@@ -504,7 +579,6 @@ async function processApprovedQuoteTurn(
       await sendAndLog(conversationId, to, QUOTE_PHOTO_MESSAGE)
       return
     }
-    // Si una foto no se pudo interpretar, la descripción del cliente la resuelve.
     const inventory = await parseWhatsAppInventory(text)
     await addUsage(conversationId, inventory.usage).catch(console.warn)
     session = await mutateQuoteSessionAtomically(session.id, current => {
@@ -520,7 +594,7 @@ async function processApprovedQuoteTurn(
       : 'Artículos registrados 📦 Puedes enviar fotos, o escribir *LISTO* para revisar el inventario.')
     return
   }
-  // Última etapa: la revisión siempre ocurre ANTES del PDF.
+  // Última etapa: el PDF únicamente después de revisar el inventario.
   if (isInventoryConfirm(text)) {
     await finishApprovedQuote(session, conversationId, to)
     return
@@ -853,15 +927,8 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
       }
       const step = quoteFlowStep(session.state)
       if (step === 'questions') {
-        if (!resumed) {
-          session = await mutateQuoteSessionAtomically(session.id, current => {
-            current.intake!.nlpQuestionCount ||= 1
-            return current
-          })
-          await sendAndLog(conversationId, to, QUOTE_FIRST_MESSAGE)
-        } else {
-          await sendAndLog(conversationId, to, missingQuoteMessage(session.state) || QUOTE_FIRST_MESSAGE)
-        }
+        await sendApprovedQuestions(session, conversationId, to,
+          !session.state.intake?.nlpQuestionCount)
       } else if (step === 'photos') {
         await sendAndLog(conversationId, to, QUOTE_PHOTO_MESSAGE)
       } else {

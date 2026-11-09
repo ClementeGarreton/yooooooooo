@@ -99,7 +99,13 @@ No completes por defecto: un servicio no mencionado es null, NO false; un piso d
 Si el cliente dice "ningún servicio adicional", marca todos los servicios opcionales false y ayudantes extra 0. Si responde NO a una pregunta que combina armado y desarmado, marca disassembly=false y assembly=false. Si responde NO a una pregunta de embalaje, marca packing=false y packingAnswer=false. Si nombra qué muebles hay que armar o desarmar, conserva sus nombres en observations y no cambies el inventario por ello. Si un inmueble es una casa, NO presupongas qué pisos o escaleras se utilizan: extrae los pisos solo si están expresamente indicados.
 Si el cliente responde DIRECTO a la pregunta de paradas, stopsSpecified=false y stops=[]. Si responde NO a una pregunta que enumera servicios extras, marca en false o 0 TODOS los servicios enumerados en esa pregunta, y deja los demás campos sin modificar. Si dice "no hay paradas intermedias", stopsSpecified=false y stops=[]. Si da paradas con dirección completa, stopsSpecified=true y stops=[...]. Si menciona una parada pero faltan sus datos, stopsSpecified=null y stops=[].
 Si una ubicación no incluye departamento o instrucciones adicionales, deja additionalInfo null; no es requisito si no aplica.
-Si el cliente copia una plantilla con preguntas, SOLO interpreta lo escrito DESPUÉS de cada "Respuesta:"; no confundas preguntas con respuestas.
+Las preguntas iniciales se envían en DOS mensajes sin «Respuesta:»; el cliente responde de forma libre.
+Si el cliente copia una plantilla antigua con "Respuesta:", SOLO interpreta lo escrito DESPUÉS de ese marcador.
+REGLA DE IMPLICATURAS: interpreta referencias contextuales como «en origen piso 5, sí hay ascensor, en destino casa, piso 0» sin exigir repetir el sujeto. Usa las preguntas recientes para interpretar respuestas telegráficas en el mismo orden. «Tampoco», «ya lo dije», «no necesito», «ninguno» niegan servicios ya mencionados en esa conversación; nunca los conviertas en objetos.
+Si se dan una vivienda casa en planta baja o piso 0, anota floor=0 y hasElevator=false como valor operativo (no se usará ascensor para la carga), pero NO extrapoles eso a otra planta. En un departamento piso 5, «sí hay ascensor» refiere al departamento salvo indicación contraria.
+Si el cliente dice «no entiendo la pregunta», NO trates esa frase ni el texto de la pregunta como artículo de inventario. El servidor le explicará la pregunta de otra forma. Extrae el resto de las respuestas del mensaje sin perderlas.
+Al contestar «no» al embalaje o al armado/desarmado en conjunto, marca los servicios respectivos falsos, aunque use otras palabras o esté negando una pregunta ya contestada.
+Solo crea unresolved para NOMBRES DE ARTÍCULOS REALES que el cliente intenta trasladar. Jamás pongas textos sobre escaleras, ascensor, estacionamientos, pisos o preguntas en unresolved; inventoryAction=none si no hay inventario nuevo. 
 Cuando la comuna permite inferir inequívocamente la región (ej.: Las Condes = Metropolitana) normalízala.
 Admite frases, erratas, numeraciones y modificaciones posteriores. Solo extrae campos NUEVOS o CORREGIDOS en este turno;
 los no mencionados van en null, inventario en [], stops en []. La información vieja se preserva automáticamente.
@@ -112,11 +118,15 @@ El campo stairsCarry señala bultos que deben ir por escalera A PESAR de existir
 Datos de empresa son necesarios solamente para factura. No inventes nombre, e-mail o RUT. Extrae el RUT personal en rut; el de empresa va solo en companyRut. Si hay un mensaje 'Pregunta N: respuesta', N corresponde EXCLUSIVAMENTE a la pregunta N de 'Preguntas del último mensaje del bot'; no uses la numeración de otro formulario.
 No inventes precio, volumen, peso, viaje ni recargos. Los calcula el motor del cotizador web.
 Catálogo válido: ${JSON.stringify(rows)}
-Preguntas del último mensaje del bot (Pregunta 1, 2... de esta interacción, si corresponde): ${JSON.stringify(currentQuestions)}
+Preguntas VIGENTES en el orden en que se enviaron (usa estas y SOLO estas si el usuario responde «primera», «segunda» o por números): ${JSON.stringify(currentQuestions)}
 Estado previo (contexto, NO copiar como nuevas respuestas): ${JSON.stringify(compact(state))}`,
     input:[{role:'user',content:rawMessage}],
   })
   data.inventory = data.inventory.filter(i=>ids.has(i.catalogItemId) && Number.isInteger(i.quantity) && i.quantity > 0 && i.quantity <= 100)
+  // El NLP no puede crear un artículo a partir de una aclaración de accesos.
+  if (data.inventoryAction === 'none') { data.inventory = []; data.unresolved = [] }
+  data.unresolved = data.unresolved.filter(label =>
+    !/(?:ascensor|piso|estacionamiento|pregunta|respuesta|origen|destino)/i.test(label)).slice(0, 15)
   data.stops = data.stops.filter(s=>s.street && s.number && s.commune).slice(0,10)
   return {data,usage}
 }
@@ -135,6 +145,12 @@ export function mergeRawQuote(state:QuoteSessionState,d:Data):QuoteSessionState 
   assign(next.personalInfo,'companyName',d.companyName);assign(next.personalInfo,'companyRut',d.companyRut)
   assign(next.schedule,'date',d.date);assign(next.schedule,'time',d.time)
   assign(next.schedule,'isFlexible',d.isFlexible);mark('isFlexible',d.isFlexible)
+  // Si el cliente dio su RUT personal y no solicita facturar a una empresa,
+  // el comprobante operativo para consumidor es boleta (implicatura habitual).
+  if (!next.taxDocument && next.personalInfo.rut?.trim() && !next.personalInfo.isCompany &&
+    !d.companyName && !d.companyRut) {
+    next.taxDocument = 'boleta'; answered.add('taxDocument')
+  }
   for (const side of ['origin','destination'] as const) {
     const origin = side === 'origin'
     const address=next[side].address, details=next[side].details
@@ -147,6 +163,10 @@ export function mergeRawQuote(state:QuoteSessionState,d:Data):QuoteSessionState 
     assign(details,'floor',origin?d.originFloor:d.destinationFloor)
     assign(details,'hasElevator',origin?d.originElevator:d.destinationElevator)
     assign(details,'parkingDistance',origin?d.originParkingMeters:d.destinationParkingMeters)
+    // Planta baja de casa: el ascensor no interviene en el traslado.
+    if (details.propertyType === 'casa' && details.floor === 0 && details.hasElevator === null) {
+      details.hasElevator = false
+    }
   }
   if (d.carryAnswer === false) {
     next.origin.details.parkingDistance ??= 0
@@ -193,6 +213,9 @@ export function mergeRawQuote(state:QuoteSessionState,d:Data):QuoteSessionState 
   } else if (d.unresolved.length) {
     next.pendingInventory=d.unresolved.map(sourceLabel=>({sourceLabel,quantity:1,question:`Artículo por precisar: ${sourceLabel}`,suggestions:[]}))
   }
+  // Limpieza de falsos «artículos» de sesiones anteriores: texto de preguntas.
+  next.pendingInventory = next.pendingInventory.filter(p =>
+    !/(?:ascensor|piso|estacionamiento|pregunta|respuesta|origen|destino)/i.test(p.sourceLabel))
   if (next.additionalServices.observations === '__pending__') next.additionalServices.observations = ''
   next.intake.answeredQuoteFields=[...answered]
   next.confirmed=false

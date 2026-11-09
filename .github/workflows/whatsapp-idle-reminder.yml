@@ -1,0 +1,24 @@
+name: Recordatorio cotizaciones WhatsApp
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  reminder:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ejecutar aviso de inactividad sin migracion
+        env:
+          SITE_URL: ${{ vars.WHATSAPP_REMINDER_SITE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -eu
+          if [ -z "$SITE_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo 'Configura vars.WHATSAPP_REMINDER_SITE_URL y secrets.CRON_SECRET en GitHub.'
+            exit 1
+          fi
+          curl --fail-with-body --retry 2 --max-time 50 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "${SITE_URL%/}/api/cron/whatsapp-idle"
