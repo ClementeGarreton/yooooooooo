@@ -101,7 +101,15 @@ Si el cliente responde DIRECTO a la pregunta de paradas, stopsSpecified=false y 
 Si una ubicación no incluye departamento o instrucciones adicionales, deja additionalInfo null; no es requisito si no aplica.
 Las preguntas iniciales se envían en DOS mensajes sin «Respuesta:»; el cliente responde de forma libre.
 Si el cliente copia una plantilla antigua con "Respuesta:", SOLO interpreta lo escrito DESPUÉS de ese marcador.
-REGLA DE IMPLICATURAS: interpreta referencias contextuales como «en origen piso 5, sí hay ascensor, en destino casa, piso 0» sin exigir repetir el sujeto. Usa las preguntas recientes para interpretar respuestas telegráficas en el mismo orden. «Tampoco», «ya lo dije», «no necesito», «ninguno» niegan servicios ya mencionados en esa conversación; nunca los conviertas en objetos.
+REGLA PRAGMÁTICA (Grice: relación, cantidad, manera y calidad):
+1. Determina a qué pregunta real responde el cliente y qué objetivo persigue; no te limites a palabras clave.
+2. Interpreta implicaturas con evidencia: «desde un departamento al quinto con ascensor, llego a una casa a nivel de calle» implica tipo, piso y acceso de cada extremo; «la entrada está junto al estacionamiento en destino» implica 0 m SOLO en destino.
+3. «Respectivamente», «ambos», «tampoco» y respuestas sucesivas alinean referentes y negaciones con las preguntas enviadas. «No gracias» ante embalaje rechaza embalaje, no todos los servicios.
+4. Separa hechos explícitos, consecuencias necesarias e hipótesis. Solo extrae los dos primeros; una hipótesis plausible no autoriza registrar un valor. Si hay más de un referente compatible, deja null.
+5. No repitas como dato nuevo una pregunta que el cliente solo cita para pedir explicación; no transformes aclaraciones de acceso en artículos.
+6. Las respuestas pueden corregir valores anteriores: solo reemplaza campos si el cliente expresa una corrección inequívoca.
+Ejemplos: «Departamento y casa respectivamente, primero con ascensor y el segundo sin escaleras» significa origen departamento y destino casa, pero NO revela el piso del primero. «En ambos lugares el camión queda en la puerta» significa estacionamiento=0 en ambos. «No entendí lo de pisos» no aporta piso ni altura.
+Interpreta referencias contextuales como «en origen piso 5, sí hay ascensor, en destino casa, piso 0» sin exigir repetir el sujeto. Usa las preguntas recientes para interpretar respuestas telegráficas en el mismo orden. «Tampoco», «ya lo dije», «no necesito», «ninguno» niegan servicios ya mencionados en esa conversación; nunca los conviertas en objetos.
 Si se dan una vivienda casa en planta baja o piso 0, anota floor=0 y hasElevator=false como valor operativo (no se usará ascensor para la carga), pero NO extrapoles eso a otra planta. En un departamento piso 5, «sí hay ascensor» refiere al departamento salvo indicación contraria.
 Si el cliente dice «no entiendo la pregunta», NO trates esa frase ni el texto de la pregunta como artículo de inventario. El servidor le explicará la pregunta de otra forma. Extrae el resto de las respuestas del mensaje sin perderlas.
 Al contestar «no» al embalaje o al armado/desarmado en conjunto, marca los servicios respectivos falsos, aunque use otras palabras o esté negando una pregunta ya contestada.

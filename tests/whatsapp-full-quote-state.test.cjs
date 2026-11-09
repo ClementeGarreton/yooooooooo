@@ -55,15 +55,15 @@ test('una respuesta completa llena quote state y no produce nuevas preguntas',()
 })
 test('la repregunta enumera todos los pendientes en un solo mensaje sin repetir los respondidos',()=>{
   const partial=data()
-  partial.destinationElevator=null; partial.destinationParkingMeters=null; partial.priority=null
+  partial.originElevator=null; partial.destinationParkingMeters=null; partial.priority=null
   const s=mergeRawQuote(base(),partial)
   const gaps=[...rawQuoteGaps(s)]
-  assert.deepEqual(gaps,['destinationElevator','destinationParkingMeters','priority'])
+  assert.deepEqual(gaps,['originElevator','destinationParkingMeters','priority'])
   const q=nextShortQuestion(s)
-  assert.match(q,/ascensor en destino/)
+  assert.match(q,/ascensor en origen/)
   assert.match(q,/metros entre camión y acceso en destino/)
   assert.match(q,/servicio prioritario/)
-  assert.doesNotMatch(q,/ascensor en origen/)
+  assert.doesNotMatch(q,/ascensor en destino/)
   assert.doesNotMatch(q,/tu nombre/)
 })
 test('se diferencia 0 y NO de dato no respondido, sin borrar respuestas previas',()=>{

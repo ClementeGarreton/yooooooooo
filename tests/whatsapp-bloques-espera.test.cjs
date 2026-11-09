@@ -38,5 +38,5 @@ const replyFn = processor.slice(processor.indexOf('async function processApprove
 assert.match(replyFn, /parseRawCustomerQuote\(session\.state, normalized, context\)/)
 assert.match(replyFn, /advanceInitialQuestionBatch\(merged\)/)
 assert.match(replyFn, /if \(movedToSecondBatch\)\s*\{[\s\S]*?sendAndLog\(conversationId, to, QUOTE_SECOND_MESSAGE\)[\s\S]*?return/)
-assert.ok(replyFn.indexOf('sendAndLog(conversationId, to, QUOTE_SECOND_MESSAGE)') < replyFn.indexOf('pendingWithoutInventory(session.state)'), 'No repreguntar faltantes antes de la segunda respuesta')
+assert.ok(replyFn.indexOf('sendAndLog(conversationId, to, QUOTE_SECOND_MESSAGE)') < replyFn.indexOf('missingQuoteQuestions(session.state)'), 'No repreguntar faltantes antes de la segunda respuesta')
 console.log('OK: bloque 1 -> respuesta NLP -> bloque 2 -> respuesta NLP -> faltantes; reanudación segura.')

@@ -6,7 +6,7 @@
  */
 import type { QuoteSessionState } from '@/lib/quoteSession'
 
-export type QuoteFlowStep = 'questions' | 'photos' | 'inventory'
+export type QuoteFlowStep = 'questions' | 'photos' | 'inventory' // 'photos' solo para sesiones anteriores
 
 // La lista aprobada se divide EN DOS mensajes de WhatsApp. No se exige copiar
 // un formulario ni se incluyen marcadores «Respuesta:».
@@ -71,7 +71,19 @@ Para recibir tu cotización en PDF solo escribe *confirmar*.`
 }
 
 export function quoteFlowStep(state: QuoteSessionState): QuoteFlowStep {
-  return state.intake?.quoteFlowStep || 'questions'
+  // Compatibilidad: sesiones antiguas que esperaban «NO»/«LISTO» avanzan sin ese trámite.
+  return state.intake?.quoteFlowStep === 'photos' ? 'inventory' : (state.intake?.quoteFlowStep || 'questions')
+}
+
+/** Sin preguntar por fotografías: el bot admite imágenes en cualquier etapa. */
+export function nextAfterQuestions(state: QuoteSessionState): QuoteFlowStep {
+  return missingQuoteQuestions(state).length ? 'questions' : 'inventory'
+}
+
+/** La confirmación del inventario no requiere un «LISTO» adicional por cada foto. */
+export function readyToReviewInventory(state: QuoteSessionState): boolean {
+  return state.items.length > 0 && state.pendingInventory.length === 0 &&
+    !(state.inventoryPhotos || []).some(photo => photo.status !== 'done')
 }
 
 export function withQuoteFlowStep(state: QuoteSessionState, step: QuoteFlowStep): QuoteSessionState {
@@ -170,7 +182,7 @@ export function missingQuoteQuestions(state: QuoteSessionState): string[] {
     questions.push(`¿Cuántos metros hay que caminar con los muebles desde el camión hasta la entrada ${location}? Si se estaciona junto a la puerta, responde 0 metros.`)
   }
 
-  if (!state.items.length) questions.push('¿Qué muebles o artículos trasladamos y cuántos de cada uno? También puedes enviarlos en fotos después.')
+  if (!state.items.length) questions.push('¿Qué muebles o artículos trasladamos y cuántos de cada uno? Puedes describirlos o enviar una foto.')
   const pendingItems = state.pendingInventory.filter(p => !/\b(?:ascensor|piso|estacionamiento|pregunta|respuesta)\b/i.test(p.sourceLabel))
   if (pendingItems.length) questions.push(`¿Me aclaras qué artículos son ${pendingItems.map(p => `«${p.sourceLabel}»`).join(', ')}?`)
 

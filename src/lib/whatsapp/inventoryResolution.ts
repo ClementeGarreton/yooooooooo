@@ -89,3 +89,31 @@ export function canCloseInventory(state: {
   return state.items.length > 0 && state.pendingInventory.length === 0
     && (state.inventoryPhotos || []).every((photo) => photo.status === 'done')
 }
+
+/**
+ * Una foto de un artículo ya descrito no significa que sea otro artículo.
+ * La primera coincidencia se conserva, salvo que el cliente indique que la
+ * imagen muestra unidades adicionales. También evita contar dos veces un
+ * objeto fotografiado desde distintos ángulos.
+ */
+export function mergePhotoInventory<T extends {
+  items: Array<{ catalogItemId: string; quantity: number }>
+  pendingInventory: Array<{ sourceLabel: string; quantity: number; question: string; suggestions: Array<{catalogItemId: string; label: string}> }>
+}>(state: T, patch: Pick<T, 'items' | 'pendingInventory'>, caption = ''): T {
+  const next = structuredClone(state)
+  const additional = /\b(?:adicional(?:es)?|extra(?:s)?|otro(?:s|as)?|otra|adem[aá]s|agrega|agregar|sumar)\b/i.test(caption)
+  for (const item of patch.items) {
+    const existing = next.items.find(old => old.catalogItemId === item.catalogItemId)
+    if (existing) {
+      if (additional) existing.quantity += item.quantity
+    } else {
+      next.items.push({ catalogItemId: item.catalogItemId, quantity: item.quantity })
+    }
+  }
+  // Las dudas antiguas no desaparecen por recibir otra imagen sin relación.
+  const known = new Set(next.pendingInventory.map(p => p.sourceLabel.toLowerCase()))
+  for (const item of patch.pendingInventory) {
+    if (!known.has(item.sourceLabel.toLowerCase())) next.pendingInventory.push(item)
+  }
+  return next
+}

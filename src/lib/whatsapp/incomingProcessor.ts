@@ -1,6 +1,7 @@
 import { parseRawCustomerQuote, mergeRawQuote, rawQuoteGaps, nextShortQuestion, QUOTE_INTAKE_QUESTIONS } from '@/lib/whatsapp/rawNlpQuote'
+import { applyGroundedImplicatures } from '@/lib/whatsapp/pragmaticInference'
 import { createStructuredResponseWithUsage } from '@/lib/ai/openai'
-import { QUOTE_FIRST_MESSAGE, QUOTE_SECOND_MESSAGE, QUOTE_INITIAL_QUESTIONS, QUOTE_PHOTO_MESSAGE, inventoryMessage, initialQuestionBatch, advanceInitialQuestionBatch, missingQuoteMessage, missingQuoteQuestions, pendingWithoutInventory, paraphraseQuoteQuestion, isQuoteConfusion, applyContextualYesNo, quoteFlowStep, withQuoteFlowStep, normalizeQuoteCustomerReply, isPhotoFinish, isInventoryConfirm } from '@/lib/whatsapp/quoteConversation'
+import { QUOTE_FIRST_MESSAGE, QUOTE_SECOND_MESSAGE, QUOTE_INITIAL_QUESTIONS, inventoryMessage, initialQuestionBatch, advanceInitialQuestionBatch, missingQuoteMessage, missingQuoteQuestions, readyToReviewInventory, paraphraseQuoteQuestion, isQuoteConfusion, applyContextualYesNo, quoteFlowStep, withQuoteFlowStep, normalizeQuoteCustomerReply, isInventoryConfirm } from '@/lib/whatsapp/quoteConversation'
 import { messageContext, conversationKey, customerPhone,
   downloadChannelImage as downloadWhatsAppMediaAsDataUrl,
   sendChannelDocument as sendWhatsAppDocument,
@@ -36,7 +37,7 @@ import { generateQuoteFromSession, generatePreliminaryWhatsAppQuote } from '@/li
 import { TOMMY_QUOTE_START, TOMMY_FOLLOWUP, TOMMY_EXECUTIVE, tommyMissing, tommyPendingMessage, applyTommyAnswers, isTommyFormReply, isOnlyTommyServiceAnswers, tommyAnswerOnlyForAI, tommyDifferentialResult, normalizeTommyNumberedReply } from '@/lib/whatsapp/tommyFlow'
 import { applyAccessForm, isTommyAccessReply } from '@/lib/whatsapp/tommyAccess'
 import { saveQuotePhoto } from '@/lib/whatsapp/photoStorage'
-import { canCloseInventory, isInventoryAddition, upsertInventoryPhoto } from '@/lib/whatsapp/inventoryResolution'
+import { canCloseInventory, isInventoryAddition, upsertInventoryPhoto, mergePhotoInventory } from '@/lib/whatsapp/inventoryResolution'
 import { applyInventoryEdits, parseInventoryEdits, type CatalogInventoryItem } from '@/lib/whatsapp/inventoryEdits'
 import { parseTaxDocumentChoice } from '@/lib/whatsapp/taxDocument'
 import { answerExtras } from '@/lib/whatsapp/extrasFlow'
@@ -438,8 +439,7 @@ async function finishApprovedQuote(session: QuoteSessionRow, conversationId: str
     await sendApprovedQuestions(updated, conversationId, to)
     return
   }
-  if (!canCloseInventory(session.state) ||
-    (session.state.inventoryPhotos || []).some(photo => photo.status !== 'done')) {
+  if (!readyToReviewInventory(session.state)) {
     await sendAndLog(conversationId, to, 'Todavía hay artículos o fotos por identificar. Indícame cuáles son antes de confirmar. 📦')
     return
   }
@@ -491,7 +491,7 @@ async function processApprovedPhoto(
   }
   await addUsage(conversationId, inventory.usage).catch(console.warn)
   session = await mutateQuoteSessionAtomically(session.id, current => {
-    const next = upsertInventoryPhoto(mergeInventory(current, inventory.statePatch), {
+    const next = upsertInventoryPhoto(mergePhotoInventory(current, inventory.statePatch, message.text), {
       messageId: message.id,
       status: inventory.needsReview ? 'needs_description' : 'done',
       recognized: inventory.recognizedNames, storagePath: stored.storagePath,
@@ -502,11 +502,14 @@ async function processApprovedPhoto(
   if (inventory.needsReview) {
     await sendAndLog(conversationId, to, 'Recibí la foto, pero hay artículos que no pude reconocer. ¿Cuáles son?')
   } else if (quoteFlowStep(session.state) === 'questions') {
-    await sendAndLog(conversationId, to, missingQuoteMessage(session.state) || QUOTE_FIRST_MESSAGE)
-  } else if (quoteFlowStep(session.state) === 'inventory') {
-    await sendAndLog(conversationId, to, await inventoryReviewQuestion(session.state))
+    // No reenviar formularios ni adelantar la etapa por recibir una imagen.
+    await sendAndLog(conversationId, to, '📸 Foto añadida. Puedes seguir respondiendo las preguntas.')
   } else {
-    await sendAndLog(conversationId, to, 'Foto añadida al inventario 📸 Puedes enviar más o escribir *LISTO* para revisarlo.')
+    // Cualquier foto recibida mientras se revisa el inventario actualiza la lista.
+    session = await mutateQuoteSessionAtomically(session.id, current => ({
+      ...current, inventoryCollectionDone: readyToReviewInventory(current),
+    }))
+    await sendAndLog(conversationId, to, await inventoryReviewQuestion(session.state))
   }
 }
 
@@ -514,13 +517,19 @@ async function processApprovedQuoteTurn(
   session: QuoteSessionRow, conversationId: string, to: string,
   message: ReturnType<typeof extractMessages>[number],
 ) {
+  // Conversaciones anteriores detenidas en «esperar fotos» pasan directamente
+  // a la revisión sin que el cliente tenga que escribir NO o LISTO.
+  if (session.state.intake?.quoteFlowStep === 'photos') {
+    session = await mutateQuoteSessionAtomically(session.id, current => {
+      const next = withQuoteFlowStep(current, 'inventory')
+      next.inventoryCollectionDone = readyToReviewInventory(next)
+      return next
+    })
+  }
   const step = quoteFlowStep(session.state)
   const text = message.text.trim()
   if (message.type === 'image') {
-    if (step === 'questions') {
-      await sendAndLog(conversationId, to, 'Las fotos van en el siguiente paso 📸. Antes terminemos los datos que faltan.')
-      return
-    }
+    // El reconocimiento es transversal; no existe una pantalla de fotografías.
     await processApprovedPhoto(session, conversationId, to, message)
     return
   }
@@ -554,7 +563,10 @@ async function processApprovedQuoteTurn(
     const answeredBatch = initialQuestionBatch(session.state)
     let movedToSecondBatch = false
     session = await mutateQuoteSessionAtomically(session.id, current => {
-      const merged = applyContextualYesNo(mergeRawQuote(current, parsed.data), text, context)
+      const extracted = applyContextualYesNo(mergeRawQuote(current, parsed.data), text, context)
+      const pragmatic = applyGroundedImplicatures(extracted, text, context)
+      const merged = pragmatic.state
+      if (pragmatic.evidence.length) console.info('[WhatsApp][implicaturas] Inferencias fundadas:', pragmatic.evidence)
       merged.intake!.nlpLastRaw = text
       merged.intake!.nlpQuestionCount = (merged.intake!.nlpQuestionCount || 1) + 1
       // CAS: si llegaron dos respuestas casi juntas al primer bloque, no
@@ -574,7 +586,7 @@ async function processApprovedQuoteTurn(
       return
     }
     // Tras la segunda respuesta, recién ahora verificar todos los datos faltantes.
-    const pending = pendingWithoutInventory(session.state)
+    const pending = missingQuoteQuestions(session.state)
     if (pending.length) {
       const currentGaps = missingQuoteQuestions(session.state)
       const clarifiedPending = clarified
@@ -590,47 +602,17 @@ async function processApprovedQuoteTurn(
         await sendApprovedQuestions(session, conversationId, to)
       }
     } else {
-      session = await mutateQuoteSessionAtomically(session.id, current => withQuoteFlowStep(current, 'photos'))
-      await sendAndLog(conversationId, to, QUOTE_PHOTO_MESSAGE)
-    }
-    return
-  }
-  if (step === 'photos') {
-    if (isPhotoFinish(text)) {
-      if (!canCloseInventory(session.state)) {
-        const unresolved = session.state.inventoryPhotos?.filter(p => p.status !== 'done') || []
-        await sendAndLog(conversationId, to, unresolved.length
-          ? 'Quedan fotos sin identificar. Escríbeme qué aparece en ellas para incorporarlas.'
-          : 'Aún falta el inventario. Escribe los artículos que trasladaremos y sus cantidades.')
-        return
-      }
       session = await mutateQuoteSessionAtomically(session.id, current => {
         const next = withQuoteFlowStep(current, 'inventory')
-        next.inventoryCollectionDone = true
+        next.inventoryCollectionDone = readyToReviewInventory(next)
         return next
       })
       await sendAndLog(conversationId, to, await inventoryReviewQuestion(session.state))
-      return
     }
-    if (!text) {
-      await sendAndLog(conversationId, to, QUOTE_PHOTO_MESSAGE)
-      return
-    }
-    const inventory = await parseWhatsAppInventory(text)
-    await addUsage(conversationId, inventory.usage).catch(console.warn)
-    session = await mutateQuoteSessionAtomically(session.id, current => {
-      const next = mergeInventory(current, inventory.statePatch)
-      const photo = (next.inventoryPhotos || []).find(p => p.status === 'needs_description')
-      if (photo && !inventory.needsReview && inventory.statePatch.items.length) {
-        return upsertInventoryPhoto(next, { ...photo, status: 'done', recognized: inventory.recognizedNames })
-      }
-      return next
-    })
-    await sendAndLog(conversationId, to, inventory.needsReview
-      ? 'Hay artículos sin identificar. Descríbelos mejor, por favor.'
-      : 'Artículos registrados 📦 Puedes enviar fotos, o escribir *LISTO* para revisar el inventario.')
     return
   }
+  // Una sesión antigua puede tener guardado quoteFlowStep='photos'.
+  // quoteFlowStep() la transforma virtualmente en 'inventory', sin pedir NO/LISTO.
   // Última etapa: el PDF únicamente después de revisar el inventario.
   if (isInventoryConfirm(text)) {
     await finishApprovedQuote(session, conversationId, to)
@@ -942,8 +924,7 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
       // Reanudar conversaciones anteriores con el nuevo flujo, conservando su JSONB.
       session = await mutateQuoteSessionAtomically(session.id, current => {
         const pending = missingQuoteQuestions(current)
-        const hasFinishedPhotos = Boolean(current.inventoryPhotos?.length && current.inventoryCollectionDone)
-        const nextStep = pending.length ? 'questions' : hasFinishedPhotos ? 'inventory' : 'photos'
+        const nextStep = pending.length ? 'questions' : 'inventory'
         const upgraded = withQuoteFlowStep(current, nextStep)
         upgraded.intake!.nlpQuestionCount = Math.max(2, upgraded.intake!.nlpQuestionCount || 0)
         return upgraded
@@ -966,8 +947,6 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
       if (step === 'questions') {
         await sendApprovedQuestions(session, conversationId, to,
           !session.state.intake?.nlpQuestionCount)
-      } else if (step === 'photos') {
-        await sendAndLog(conversationId, to, QUOTE_PHOTO_MESSAGE)
       } else {
         await sendAndLog(conversationId, to, await inventoryReviewQuestion(session.state))
       }
@@ -1062,7 +1041,7 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
   // Notas de voz y otros adjuntos no son texto parseable. Evita llamar
   // a OpenAI con un texto vacío y perder la respuesta silenciosamente.
   if (message.type !== 'text' && message.type !== 'interactive' && message.type !== 'image') {
-    await sendAndLog(conversationId, to, 'Por ahora necesito que respondas por escrito. En la etapa de fotos también puedes enviar imágenes.')
+    await sendAndLog(conversationId, to, 'Puedes escribirme tus respuestas o enviar fotografías de tus muebles. 😊')
     return
   }
 
