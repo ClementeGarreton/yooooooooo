@@ -13,7 +13,7 @@ function loadPure(relative) {
 }
 const flow = loadPure('src/lib/whatsapp/quoteConversation.ts')
 const engine = loadPure('src/lib/whatsapp/rawNlpQuote.ts')
-const cron = loadPure('src/app/api/cron/whatsapp-idle/route.ts')
+const cron = loadPure('src/lib/whatsapp/idleReminder.ts')
 const address = (label, details={propertyType:'departamento',floor:5,hasElevator:true,parkingDistance:15})=>({
   address:{street:label,number:'342',commune:'Las Condes',region:'Metropolitana',additionalInfo:null}, details
 })

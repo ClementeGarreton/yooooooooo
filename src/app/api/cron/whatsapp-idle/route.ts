@@ -10,6 +10,7 @@ import { mutateQuoteSessionAtomically, type QuoteSessionRow } from '@/lib/quoteS
 import { findOrCreateWhatsAppConversation, logMessage } from '@/lib/ai/conversationStore'
 import { sendWhatsAppText } from '@/lib/whatsapp/cloudApi'
 import { QUOTE_IDLE_MESSAGE } from '@/lib/whatsapp/quoteConversation'
+import { shouldSendIdleReminder } from '@/lib/whatsapp/idleReminder'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -21,15 +22,6 @@ type RouterRecord = {
   external_user_id: string | null
   quote_session_id: string | null
   last_message_at: string | null
-}
-
-export function shouldSendIdleReminder(params: {
-  now: number; lastActivityAt: string | null | undefined
-  alreadySentFor: string | null | undefined
-}): boolean {
-  if (!params.lastActivityAt || params.alreadySentFor === params.lastActivityAt) return false
-  const elapsed = params.now - Date.parse(params.lastActivityAt)
-  return Number.isFinite(elapsed) && elapsed >= AFTER_MS && elapsed < WITHIN_MS
 }
 
 export async function GET(request: NextRequest) {
