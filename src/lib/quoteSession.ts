@@ -8,7 +8,7 @@ export type PropertyType = 'casa' | 'departamento' | 'oficina' | 'bodega' | 'otr
 
 export interface QuoteSessionState {
   /** Captura conversacional en JSONB: compatible con sesiones anteriores. */
-  intake?: { stage: 'describe' | 'review'; serviceAnswers: Array<'packing' | 'disassembly' | 'assembly' | 'unpacking'>; tommyVersion?: 1; tommyAnswers?: Array<'escaleras' | 'acarreo' | 'embalaje'>; tommyDetails?: Partial<Record<'escaleras' | 'acarreo' | 'embalaje', string>>; tommyAccess?: TommyAccess; tommySubmittedAt?: string; nlpQuestionCount?: number; nlpLastRaw?: string; answeredQuoteFields?: string[]; quoteFlowVersion?: 2; quoteFlowStep?: 'questions' | 'photos' | 'inventory'; lastQuestionContext?: string[]; idleReminderForActivityAt?: string }
+  intake?: { stage: 'describe' | 'review'; serviceAnswers: Array<'packing' | 'disassembly' | 'assembly' | 'unpacking'>; tommyVersion?: 1; tommyAnswers?: Array<'escaleras' | 'acarreo' | 'embalaje'>; tommyDetails?: Partial<Record<'escaleras' | 'acarreo' | 'embalaje', string>>; tommyAccess?: TommyAccess; tommySubmittedAt?: string; nlpQuestionCount?: number; nlpLastRaw?: string; answeredQuoteFields?: string[]; quoteFlowVersion?: 2; quoteFlowStep?: 'questions' | 'photos' | 'inventory'; initialQuestionBatch?: 0 | 1 | 2 | 3; lastQuestionContext?: string[]; idleReminderForActivityAt?: string }
   personalInfo: {
     name: string | null
     email: string | null
@@ -147,7 +147,7 @@ export function createEmptyQuoteState(phone: string): QuoteSessionState {
       stairsCarry: false,
     },
     confirmed: false,
-    intake: { stage: 'describe', serviceAnswers: [], tommyVersion: 1, tommyAnswers: [], tommyDetails: {}, answeredQuoteFields: [], nlpQuestionCount: 0, quoteFlowVersion: 2, quoteFlowStep: 'questions' },
+    intake: { stage: 'describe', serviceAnswers: [], tommyVersion: 1, tommyAnswers: [], tommyDetails: {}, answeredQuoteFields: [], nlpQuestionCount: 0, quoteFlowVersion: 2, quoteFlowStep: 'questions', initialQuestionBatch: 0 },
   }
 }
 

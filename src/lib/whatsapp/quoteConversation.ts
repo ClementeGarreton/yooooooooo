@@ -27,6 +27,29 @@ export const QUOTE_SECOND_MESSAGE = `${QUOTE_INITIAL_QUESTIONS.slice(4).map((q, 
 
 Puedes responder todo junto, con tus propias palabras. 😊`
 
+/** 0 = nuevo, 1 = preguntas 1–4 enviadas, 2 = preguntas 5–8
+ * enviadas, 3 = ambas respuestas procesadas. Los estados antiguos, que
+ * recibieron los dos mensajes juntos, se consideran completos (3).
+ */
+export function initialQuestionBatch(state: QuoteSessionState): 0 | 1 | 2 | 3 {
+  return state.intake?.initialQuestionBatch ?? 3
+}
+
+/** Avanza únicamente tras procesar una respuesta del bloque activo. */
+export function advanceInitialQuestionBatch(state: QuoteSessionState): QuoteSessionState {
+  const batch = initialQuestionBatch(state)
+  if (batch !== 1 && batch !== 2) return state
+  return {
+    ...state,
+    intake: {
+      ...state.intake!,
+      initialQuestionBatch: batch === 1 ? 2 : 3,
+      lastQuestionContext: batch === 1 ? QUOTE_INITIAL_QUESTIONS.slice(4) : state.intake?.lastQuestionContext,
+    },
+  }
+}
+
+
 export const QUOTE_PHOTO_MESSAGE = `Envía fotos al analizador 📸
 
 Envía fotos de tus artículos de traslado. Yo los reconoceré y sumaré al inventario. Escribe «NO» para omitir y avanzar. Si envías fotos, escribe «LISTO» cuando termines.`

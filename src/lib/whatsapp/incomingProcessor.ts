@@ -1,6 +1,6 @@
 import { parseRawCustomerQuote, mergeRawQuote, rawQuoteGaps, nextShortQuestion, QUOTE_INTAKE_QUESTIONS } from '@/lib/whatsapp/rawNlpQuote'
 import { createStructuredResponseWithUsage } from '@/lib/ai/openai'
-import { QUOTE_FIRST_MESSAGE, QUOTE_SECOND_MESSAGE, QUOTE_INITIAL_QUESTIONS, QUOTE_PHOTO_MESSAGE, inventoryMessage, missingQuoteMessage, missingQuoteQuestions, pendingWithoutInventory, paraphraseQuoteQuestion, isQuoteConfusion, applyContextualYesNo, quoteFlowStep, withQuoteFlowStep, normalizeQuoteCustomerReply, isPhotoFinish, isInventoryConfirm } from '@/lib/whatsapp/quoteConversation'
+import { QUOTE_FIRST_MESSAGE, QUOTE_SECOND_MESSAGE, QUOTE_INITIAL_QUESTIONS, QUOTE_PHOTO_MESSAGE, inventoryMessage, initialQuestionBatch, advanceInitialQuestionBatch, missingQuoteMessage, missingQuoteQuestions, pendingWithoutInventory, paraphraseQuoteQuestion, isQuoteConfusion, applyContextualYesNo, quoteFlowStep, withQuoteFlowStep, normalizeQuoteCustomerReply, isPhotoFinish, isInventoryConfirm } from '@/lib/whatsapp/quoteConversation'
 import { messageContext, conversationKey, customerPhone,
   downloadChannelImage as downloadWhatsAppMediaAsDataUrl,
   sendChannelDocument as sendWhatsAppDocument,
@@ -346,11 +346,22 @@ async function sendApprovedQuestions(
 ): Promise<void> {
   if (initial) {
     await mutateQuoteSessionAtomically(session.id, current => {
-      current.intake!.lastQuestionContext = QUOTE_INITIAL_QUESTIONS
+      // No enviar ambas mitades juntas: esperamos una respuesta entre ellas.
+      current.intake!.initialQuestionBatch = 1
+      current.intake!.lastQuestionContext = QUOTE_INITIAL_QUESTIONS.slice(0, 4)
       current.intake!.nlpQuestionCount = 1
       return current
     })
     await sendAndLog(conversationId, to, QUOTE_FIRST_MESSAGE)
+    return
+  }
+  // Al retomar, recordar exclusivamente la mitad que el cliente tiene pendiente.
+  const batch = initialQuestionBatch(session.state)
+  if (batch === 1) {
+    await sendAndLog(conversationId, to, QUOTE_FIRST_MESSAGE)
+    return
+  }
+  if (batch === 2) {
     await sendAndLog(conversationId, to, QUOTE_SECOND_MESSAGE)
     return
   }
@@ -398,11 +409,16 @@ No generes cotizaciones, precios ni prometas servicios fuera de la pregunta.`,
 function misunderstoodQuestion(text: string, questions: string[]): string | null {
   if (!isQuoteConfusion(text)) return null
   const ordinal = /\b(?:la\s+)?(?:pregunta\s*)?(\d{1,2})\b/i.exec(text)?.[1]
-  let index = ordinal ? Number(ordinal) - 1 : -1
+  const secondBatch = questions[0] === QUOTE_INITIAL_QUESTIONS[4]
+  let index = ordinal ? Number(ordinal) - (secondBatch && Number(ordinal) >= 5 ? 5 : 1) : -1
   if (index < 0) {
     if (/\b(?:segunda|2da)\b/i.test(text)) index = 1
     else if (/\b(?:primera|1ra)\b/i.test(text)) index = 0
     else if (/\b(?:tercera|3ra)\b/i.test(text)) index = 2
+    else if (secondBatch && /\b(?:quinta|5ta)\b/i.test(text)) index = 0
+    else if (secondBatch && /\b(?:sexta|6ta)\b/i.test(text)) index = 1
+    else if (secondBatch && /\b(?:s[eé]ptima|7ma)\b/i.test(text)) index = 2
+    else if (secondBatch && /\b(?:octava|8va)\b/i.test(text)) index = 3
   }
   // Si la persona no menciona número, preferir lo último que quedó sin resolver.
   const q = questions[index] || questions[0] || null
@@ -529,14 +545,29 @@ async function processApprovedQuoteTurn(
       await sendAndLog(conversationId, to, 'No pude procesar el último mensaje. Tus respuestas anteriores están guardadas; reenvía solo este mensaje.')
       return
     }
+    const answeredBatch = initialQuestionBatch(session.state)
+    let movedToSecondBatch = false
     session = await mutateQuoteSessionAtomically(session.id, current => {
       const merged = applyContextualYesNo(mergeRawQuote(current, parsed.data), text, context)
       merged.intake!.nlpLastRaw = text
       merged.intake!.nlpQuestionCount = (merged.intake!.nlpQuestionCount || 1) + 1
-      return merged
+      // CAS: si llegaron dos respuestas casi juntas al primer bloque, no
+      // interpretar la segunda como si contestara preguntas aún no enviadas.
+      const currentBatch = initialQuestionBatch(current)
+      movedToSecondBatch = answeredBatch === 1 && currentBatch === 1
+      return answeredBatch === currentBatch ? advanceInitialQuestionBatch(merged) : merged
     })
     await addUsage(conversationId, parsed.usage).catch(console.warn)
-    // El inventario también puede completarse mediante fotografías.
+    if (movedToSecondBatch) {
+      // Segunda mitad: se envía SOLO tras recibir y procesar el primer bloque.
+      await sendAndLog(conversationId, to, QUOTE_SECOND_MESSAGE)
+      return
+    }
+    if (initialQuestionBatch(session.state) === 2) {
+      // Otra respuesta llegó mientras se procesaba la primera: no anticipar faltantes.
+      return
+    }
+    // Tras la segunda respuesta, recién ahora verificar todos los datos faltantes.
     const pending = pendingWithoutInventory(session.state)
     if (pending.length) {
       const currentGaps = missingQuoteQuestions(session.state)
