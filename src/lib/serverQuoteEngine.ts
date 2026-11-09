@@ -9,6 +9,7 @@ import { routeDistanceWith, type RoutePoint } from '@/lib/routeDistance'
 import { upsertQuoteProspect } from '@/lib/server/quoteProspects'
 import { siteBaseUrl, toHiddenFileUrl } from '@/lib/fileLinks'
 import { loadQuotePhoto } from '@/lib/whatsapp/photoStorage'
+import { rawQuoteGaps } from '@/lib/whatsapp/rawNlpQuote'
 
 interface CatalogRow {
   id: string | number
@@ -93,15 +94,23 @@ export async function calculateSessionQuote(state: QuoteSessionState) {
   // del cotizador web. Así una cotización por WhatsApp da el mismo valor que en la web y
   // sigue cualquier cambio que se haga en Configuración → Precios.
   const [pricing, totalDistance] = await Promise.all([readPricingConfig(), calculateDistance(state)])
-  // «No se usarán escaleras» no implica «hay ascensor», pero sí significa
-  // que NO corresponde cobrar un recargo por escaleras en esta cotización preliminar.
-  const noStairCarry = state.intake?.tommyVersion === 1 && state.intake.tommyDetails?.escaleras === 'No'
+  const access = state.intake?.tommyAccess
+  const stairsArticles = access?.stairsAll ? items : (access?.stairsInventory || []).map(selected => {
+    const item = items.find(item => item.id === selected.catalogItemId)
+    return item ? { ...item, quantity: Math.min(item.quantity, selected.quantity) } : null
+  }).filter((item): item is (typeof items)[number] => item !== null)
+  const stairInputs = access?.stairsItems ? stairsArticles : items
   const result = calculateQuote({
     items,
-    origin: { floor: noStairCarry ? 0 : state.origin.details.floor ?? undefined, hasElevator: state.origin.details.hasElevator ?? undefined },
-    destination: { floor: noStairCarry ? 0 : state.destination.details.floor ?? undefined, hasElevator: state.destination.details.hasElevator ?? undefined },
+    origin: { floor: access?.originStairs === false ? 0 : state.origin.details.floor ?? access?.originFloors ?? undefined,
+      // El acceso utilizable y el uso declarado de escalera son cosas distintas.
+      hasElevator: access?.originStairs === true ? false : (access?.originStairs === false ? true : state.origin.details.hasElevator ?? undefined) },
+    destination: { floor: access?.destinationStairs === false ? 0 : state.destination.details.floor ?? access?.destinationFloors ?? undefined,
+      hasElevator: access?.destinationStairs === true ? false : (access?.destinationStairs === false ? true : state.destination.details.hasElevator ?? undefined) },
+    originStairItems: access ? (access.originStairs ? stairInputs : []) : undefined,
+    destinationStairItems: access ? (access.destinationStairs ? stairInputs : []) : undefined,
     distanceKm: totalDistance,
-    dateTime: state.schedule.date && state.schedule.time ? `${state.schedule.date}T${state.schedule.time}:00` : null,
+    dateTime: state.schedule.date ? `${state.schedule.date}T${state.schedule.time || '12:00'}:00` : null,
     isFlexible: state.schedule.isFlexible,
     isCompany: state.personalInfo.isCompany,
     additionalServices: { disassembly: state.additionalServices.disassembly, assembly: state.additionalServices.assembly,
@@ -170,19 +179,40 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
   const access = (endpoint: 'origin' | 'destination') => {
     const details = state[endpoint].details
     const label = endpoint === 'origin' ? 'Origen' : 'Destino'
-    const floor = details.floor === null ? 'Sin informar' : `${details.floor}° piso`
-    const elevator = details.hasElevator === null ? 'Sin confirmar' : (details.hasElevator ? 'Sí' : 'No')
-    const carry = details.parkingDistance === null ? 'Sin informar' : `${details.parkingDistance} m`
-    line(`${label}: ${floor} | Ascensor: ${elevator} | Acarreo: ${carry}`)
+    const a = state.intake?.tommyAccess
+    // La web todavía usa su ficha original, no las respuestas de Tommy.
+    if (!a) {
+      const floor = details.floor === null ? 'Sin informar' : `${details.floor}° piso`
+      const elevator = details.hasElevator === null ? 'Sin confirmar' : (details.hasElevator ? 'Sí' : 'No')
+      const carry = details.parkingDistance === null ? 'Sin informar' : `${details.parkingDistance} m`
+      line(`${label}: ${floor} | Ascensor: ${elevator} | Acarreo: ${carry}`)
+      return
+    }
+    const stairsUsed = a[endpoint === 'origin' ? 'originStairs' : 'destinationStairs']
+    const parts = [`${label}: Escaleras: ${stairsUsed === true ? 'Sí' : 'No'}`]
+    if (stairsUsed && details.floor !== null) parts.push(`${details.floor} pisos por escalera`)
+    if (details.hasElevator !== null) parts.push(`Ascensor: ${details.hasElevator ? 'Sí' : 'No'}`)
+    if (details.parkingDistance !== null) parts.push(`Acarreo: ${details.parkingDistance} m`)
+    line(parts.join(' | '))
   }
 
   drawHeader()
   section('Cliente')
-  line(`Nombre: ${state.personalInfo.name || 'No informado'} | Teléfono: ${state.personalInfo.phone || 'No informado'}`)
-  line(`Correo: ${state.personalInfo.email || 'No informado'} | Documento: ${state.taxDocument || 'Por definir'}`)
+  // La cotización WhatsApp no pide nombre, email ni documento tributario:
+  // jamás presentar esos campos no solicitados como variables sin definir.
+  const contact = [
+    state.personalInfo.name ? `Nombre: ${state.personalInfo.name}` : '',
+    state.personalInfo.phone ? `Teléfono: ${state.personalInfo.phone}` : '',
+  ].filter(Boolean).join(' | ')
+  if (contact) line(contact)
+  const fiscal = [
+    state.personalInfo.email ? `Correo: ${state.personalInfo.email}` : '',
+    state.taxDocument ? `Documento: ${state.taxDocument}` : '',
+  ].filter(Boolean).join(' | ')
+  if (fiscal) line(fiscal)
 
   section('Mudanza')
-  line(`Fecha: ${state.schedule.date || 'Por confirmar'} | Hora: ${state.schedule.time || 'Por confirmar'}`)
+  line(`Fecha: ${state.schedule.date}${state.schedule.time ? ` | Hora: ${state.schedule.time}` : ''}`)
   line(`Origen: ${addressText(state.origin.address)}`)
   line(`Destino: ${addressText(state.destination.address)}`)
   line(`Distancia de ruta: ${quote.totalDistance.toFixed(2)} km`)
@@ -192,12 +222,7 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
   access('destination')
   const responses = state.intake?.tommyDetails
   if (responses?.escaleras) line(`Escaleras declaradas: ${responses.escaleras}`)
-  const noStairCarry = state.intake?.tommyVersion === 1 && responses?.escaleras === 'No'
-  if (noStairCarry) {
-    line('Criterio de cálculo: no se agregó recargo por escaleras, aunque exista un piso declarado.', 18, 8.5)
-  } else if ([state.origin, state.destination].some((p) => (p.details.floor || 0) > 0 && p.details.hasElevator === null)) {
-    line('Atención: hay un piso con ascensor sin confirmar; la fórmula aplica recargo de escaleras hasta verificar el acceso.', 18, 8.5)
-  }
+  if (state.intake?.tommyAccess?.stairsItems) line(`Artículos por escalera: ${state.intake.tommyAccess.stairsItems}`)
   if (responses?.acarreo) line(`Distancia de carga declarada: ${responses.acarreo}`)
   const packDetail = responses?.embalaje || ''
   const observations = state.additionalServices.observations === '__pending__' ? '' : (state.additionalServices.observations || '')
@@ -402,6 +427,8 @@ export async function generateQuoteFromSession(session: QuoteSessionRow): Promis
  */
 export async function generatePreliminaryWhatsAppQuote(session: QuoteSessionRow): Promise<ServerQuoteResult> {
   const state = session.state
+  const missing = rawQuoteGaps(state)
+  if (missing.length) throw new Error(`Cotización incompleta: ${missing.join(', ')}`)
   if (!state.origin.address.street || !state.destination.address.street || !state.schedule.date || !state.items.length || state.pendingInventory.length) {
     throw new Error('Faltan direcciones, fecha o inventario para calcular el precio estimativo')
   }

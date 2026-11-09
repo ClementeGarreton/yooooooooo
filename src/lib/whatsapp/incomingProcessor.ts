@@ -299,9 +299,9 @@ async function validateFreeformSchedule(state: QuoteSessionRow['state']): Promis
 
 /** Al completar los seis grupos: precio y PDF, sin dependencia de secretaría. */
 async function finishTommyQuote(session: QuoteSessionRow, conversationId: string, to: string) {
-  const missing = tommyMissing(session.state)
+  const missing = rawQuoteGaps(session.state)
   if (missing.length) {
-    await sendAndLog(conversationId, to, tommyPendingMessage(session.state)!)
+    await sendAndLog(conversationId, to, nextShortQuestion(session.state))
     return
   }
   // No recalcular al recibir una confirmación duplicada; reenviar el enlace existente.

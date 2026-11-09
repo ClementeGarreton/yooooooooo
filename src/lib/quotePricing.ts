@@ -59,6 +59,9 @@ export interface QuotePricingInput {
   destination?: QuotePropertyInput | null
   /** Distancia de la ruta completa, con las paradas ya sumadas. La mide el que llama. */
   distanceKm: number
+  /** Lista efectiva de bultos que subirán por escalera. Si se omite, se conserva el comportamiento de la web. */
+  originStairItems?: QuoteItemInput[]
+  destinationStairItems?: QuoteItemInput[]
   /** Fecha de la mudanza: define el recargo de sábado, domingo o feriado. */
   dateTime?: string | Date | null
   isFlexible?: boolean
@@ -178,10 +181,10 @@ export function calculateQuote(input: QuotePricingInput): QuotePricingResult {
   const trips = stairTrips(items, pricing.stairs)
   const floorsOrigin = Math.max(0, Number(input.origin?.floor) || 0)
   const floorsDestination = Math.max(0, Number(input.destination?.floor) || 0)
-  charge('stairs_origin', `Escaleras origen: ${floorsOrigin} piso(s), ${trips} viaje(s), $${pesos(pricing.floorSurcharge)}/piso/viaje`,
-    stairsCost(input.origin?.floor, input.origin?.hasElevator, items, pricing.floorSurcharge, pricing.stairs))
-  charge('stairs_destination', `Escaleras destino: ${floorsDestination} piso(s), ${trips} viaje(s), $${pesos(pricing.floorSurcharge)}/piso/viaje`,
-    stairsCost(input.destination?.floor, input.destination?.hasElevator, items, pricing.floorSurcharge, pricing.stairs))
+  charge('stairs_origin', `Escaleras origen: ${floorsOrigin} piso(s), ${stairTrips(input.originStairItems ?? items, pricing.stairs)} viaje(s), $${pesos(pricing.floorSurcharge)}/piso/viaje`,
+    stairsCost(input.origin?.floor, input.origin?.hasElevator, input.originStairItems ?? items, pricing.floorSurcharge, pricing.stairs))
+  charge('stairs_destination', `Escaleras destino: ${floorsDestination} piso(s), ${stairTrips(input.destinationStairItems ?? items, pricing.stairs)} viaje(s), $${pesos(pricing.floorSurcharge)}/piso/viaje`,
+    stairsCost(input.destination?.floor, input.destination?.hasElevator, input.destinationStairItems ?? items, pricing.floorSurcharge, pricing.stairs))
 
   const crewByWeight = requiredPeople(items, pricing.crew)
   const totalCrew = Math.min(pricing.crew.maxPeople,
