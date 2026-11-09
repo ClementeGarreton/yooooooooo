@@ -8,10 +8,11 @@ export type PropertyType = 'casa' | 'departamento' | 'oficina' | 'bodega' | 'otr
 
 export interface QuoteSessionState {
   /** Captura conversacional en JSONB: compatible con sesiones anteriores. */
-  intake?: { stage: 'describe' | 'review'; serviceAnswers: Array<'packing' | 'disassembly' | 'assembly' | 'unpacking'>; tommyVersion?: 1; tommyAnswers?: Array<'escaleras' | 'acarreo' | 'embalaje'>; tommyDetails?: Partial<Record<'escaleras' | 'acarreo' | 'embalaje', string>>; tommyAccess?: TommyAccess; tommySubmittedAt?: string; nlpQuestionCount?: number; nlpLastRaw?: string; answeredQuoteFields?: string[] }
+  intake?: { stage: 'describe' | 'review'; serviceAnswers: Array<'packing' | 'disassembly' | 'assembly' | 'unpacking'>; tommyVersion?: 1; tommyAnswers?: Array<'escaleras' | 'acarreo' | 'embalaje'>; tommyDetails?: Partial<Record<'escaleras' | 'acarreo' | 'embalaje', string>>; tommyAccess?: TommyAccess; tommySubmittedAt?: string; nlpQuestionCount?: number; nlpLastRaw?: string; answeredQuoteFields?: string[]; quoteFlowVersion?: 2; quoteFlowStep?: 'questions' | 'photos' | 'inventory' }
   personalInfo: {
     name: string | null
     email: string | null
+    rut?: string | null
     phone: string
     isCompany: boolean
     companyName: string | null
@@ -111,6 +112,7 @@ export function createEmptyQuoteState(phone: string): QuoteSessionState {
     personalInfo: {
       name: null,
       email: null,
+      rut: null,
       phone,
       isCompany: false,
       companyName: null,
@@ -145,7 +147,7 @@ export function createEmptyQuoteState(phone: string): QuoteSessionState {
       stairsCarry: false,
     },
     confirmed: false,
-    intake: { stage: 'describe', serviceAnswers: [], tommyVersion: 1, tommyAnswers: [], tommyDetails: {}, answeredQuoteFields: [], nlpQuestionCount: 0 },
+    intake: { stage: 'describe', serviceAnswers: [], tommyVersion: 1, tommyAnswers: [], tommyDetails: {}, answeredQuoteFields: [], nlpQuestionCount: 0, quoteFlowVersion: 2, quoteFlowStep: 'questions' },
   }
 }
 

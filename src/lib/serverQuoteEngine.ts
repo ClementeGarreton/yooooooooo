@@ -1,5 +1,6 @@
 import { rawQuoteGaps } from '@/lib/whatsapp/rawNlpQuote'
 import jsPDF from 'jspdf'
+import { missingQuoteQuestions } from '@/lib/whatsapp/quoteConversation'
 import { supabaseAdmin } from '@/lib/supabase'
 import { MAPS_CONFIG } from '@/config/maps'
 import type { QuoteSessionRow, QuoteSessionState } from '@/lib/quoteSession'
@@ -185,7 +186,7 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
   drawHeader()
   section('Cliente')
   line(`Nombre: ${state.personalInfo.name || 'No informado'} | Teléfono: ${state.personalInfo.phone || 'No informado'}`)
-  line(`Correo: ${state.personalInfo.email || 'No informado'} | Documento: ${state.taxDocument || 'Por definir'}`)
+  line(`Correo: ${state.personalInfo.email || 'No informado'} | RUT: ${state.personalInfo.rut || 'No informado'} | Documento: ${state.taxDocument || 'Por definir'}`)
 
   section('Mudanza')
   line(`Fecha: ${state.schedule.date || 'Por confirmar'} | Hora: ${state.schedule.time || 'Por confirmar'}`)
@@ -210,6 +211,7 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
     : 'No'
   line(`Embalaje: ${packingDescription}`)
   line(`Desarmado: ${state.additionalServices.disassembly ? 'Sí' : 'No'} | Armado: ${state.additionalServices.assembly ? 'Sí' : 'No'} | Desembalaje: ${state.additionalServices.unpacking ? 'Sí' : 'No'}`)
+  if (observations) line(`Observaciones del traslado: ${observations}`)
   line(`Ayudantes adicionales: ${state.additionalServices.extraHelpers ?? 0} | Desarmado de refrigerador: ${state.additionalServices.fridgeDisassembly ? 'Sí' : 'No'} | Prioritario: ${state.additionalServices.priority ? 'Sí' : 'No'}`)
   line(`Bultos por escalera fuera del ascensor: ${state.additionalServices.stairsCarry ? 'Sí' : 'No'} | Fecha flexible: ${state.schedule.isFlexible ? 'Sí' : 'No'}`)
   line(`Origen: ${state.origin.details.propertyType || 'Sin informar'} | Destino: ${state.destination.details.propertyType || 'Sin informar'}`)
@@ -415,7 +417,7 @@ export async function generateQuoteFromSession(session: QuoteSessionRow): Promis
  */
 export async function generatePreliminaryWhatsAppQuote(session: QuoteSessionRow): Promise<ServerQuoteResult> {
   const state = session.state
-  const missing = rawQuoteGaps(state)
+  const missing = state.intake?.quoteFlowVersion === 2 ? missingQuoteQuestions(state) : rawQuoteGaps(state)
   if (missing.length) throw new Error(`No se genera PDF con variables sin contestar: ${missing.join(', ')}`)
   const quote = await calculateSessionQuote(state)
   if (!Number.isFinite(quote.estimatedPrice) || quote.estimatedPrice <= 0) {

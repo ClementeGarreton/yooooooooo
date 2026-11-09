@@ -1,4 +1,5 @@
 import { parseRawCustomerQuote, mergeRawQuote, rawQuoteGaps, nextShortQuestion, QUOTE_INTAKE_QUESTIONS } from '@/lib/whatsapp/rawNlpQuote'
+import { QUOTE_FIRST_MESSAGE, QUOTE_PHOTO_MESSAGE, inventoryMessage, missingQuoteMessage, missingQuoteQuestions, quoteFlowStep, withQuoteFlowStep, normalizeQuoteCustomerReply, isPhotoFinish, isInventoryConfirm } from '@/lib/whatsapp/quoteConversation'
 import { messageContext, conversationKey, customerPhone,
   downloadChannelImage as downloadWhatsAppMediaAsDataUrl,
   sendChannelDocument as sendWhatsAppDocument,
@@ -128,21 +129,17 @@ async function sendAndLog(conversationId: string, to: string, text: string) {
   })
 }
 
-/** Muestra los artículos que realmente se utilizarán para calcular el PDF. */
+/** Inventario real usado para calcular precio y PDF; sin valores decorativos. */
 async function inventoryReviewQuestion(state: QuoteSessionRow['state']): Promise<string> {
   const ids = state.items.map((item) => item.catalogItemId)
-  const { data, error } = await supabaseAdmin.from('catalog_items').select('id,name').in('id', ids)
-  if (error) throw new Error(error.message)
-  const names = new Map((data || []).map((row) => [String(row.id), String(row.name)]))
-  const list = state.items.map((item) => `• ${item.quantity} × ${names.get(item.catalogItemId) || 'Artículo no identificado'}`).join('\n')
-  const photos = state.inventoryPhotos || []
-  return `7/7 · *Revisa tu inventario antes de cotizar*\n\n${list}\n\n` +
-    `${photos.length ? `Fotos procesadas: ${photos.filter((photo) => photo.status === 'done').length}/${photos.length}.\n` : ''}` +
-    `¿Están todos tus muebles y no sobra ninguno?\n\n` +
-    `*CONFIRMAR* — generar precio y PDF.\n` +
-    `*QUITAR* + nombre — eliminar un objeto.\n` +
-    `*AGREGAR* + descripción — incorporar uno que falta.\n` +
-    `También puedes enviar una fotografía adicional.`
+  const names = new Map<string, string>()
+  if (ids.length) {
+    const { data, error } = await supabaseAdmin.from('catalog_items').select('id,name').in('id', ids)
+    if (error) throw new Error(error.message)
+    for (const row of (data || []) as Array<{id: string | number; name: string}>) names.set(String(row.id), String(row.name))
+  }
+  const list = state.items.map((item) => `• ${item.quantity} × ${names.get(item.catalogItemId) || 'Artículo pendiente de identificar'}`).join('\n')
+  return inventoryMessage(list)
 }
 
 async function nextQuestion(state: QuoteSessionRow['state']): Promise<string> {
@@ -158,7 +155,7 @@ async function editInventory(sessionId: string, text: string): Promise<{
   if (!edits) return { updated: null, response: 'No reconocí el comando.' }
   const { data, error } = await supabaseAdmin.from('catalog_items').select('id,name,is_active')
   if (error) throw new Error(error.message)
-  const catalog: CatalogInventoryItem[] = (data || []).map((row) => ({
+  const catalog: CatalogInventoryItem[] = (data || []).map((row: any) => ({
     id: String(row.id), name: String(row.name), is_active: row.is_active !== false,
   }))
   // Revalidar TODOS los cambios en cada reintento CAS. No se guarda nada si
@@ -180,18 +177,9 @@ async function editInventory(sessionId: string, text: string): Promise<{
   }
 }
 
-async function handleHumanHandoff(session: QuoteSessionRow, conversationId: string, to: string) {
-  await saveQuoteSession(session.id, session.state, { status: 'handoff' })
-  await setBotMode(normalizePhone(to), 'human')
-  await updateConversation(conversationId, { status: 'handoff' })
-  // Desactivado: requiere handoff_requests (tabla aún inexistente).
-  // await createHandoffRequest({ phone: normalizePhone(to), session })
-  await logAction({ conversationId, action: 'human_handoff_requested', payload: { quoteSessionId: session.id } })
-  await sendAndLog(
-    conversationId,
-    to,
-    'La derivación automática está temporalmente desactivada. Tu cotización sigue guardada; escribe *COTIZAR* para retomarla.'
-  )
+async function handleHumanHandoff(_session: QuoteSessionRow, conversationId: string, to: string) {
+  // Derivación dormida: no se cambia bot_state, estado de cotización ni DB.
+  await sendAndLog(conversationId, to, 'La derivación a secretaría todavía no está habilitada. Puedes seguir cotizando aquí.')
 }
 
 async function finalizeQuote(session: QuoteSessionRow, conversationId: string, to: string) {
@@ -272,7 +260,7 @@ async function sendFreeformReview(session: QuoteSessionRow, conversationId: stri
   if (ids.length) {
     const { data, error } = await supabaseAdmin.from('catalog_items').select('id,name').in('id', ids)
     if (error) throw new Error(error.message)
-    for (const row of data || []) names.set(String(row.id), String(row.name))
+    for (const row of (data || []) as Array<{id: string | number; name: string}>) names.set(String(row.id), String(row.name))
   }
   const itemNames = session.state.items.map((item) => `${item.quantity} × ${names.get(item.catalogItemId) || 'ARTÍCULO SIN NOMBRE'}`)
   const summary = formatIntakeReview(session.state, itemNames)
@@ -299,9 +287,9 @@ async function validateFreeformSchedule(state: QuoteSessionRow['state']): Promis
 
 /** Al completar los seis grupos: precio y PDF, sin dependencia de secretaría. */
 async function finishTommyQuote(session: QuoteSessionRow, conversationId: string, to: string) {
-  const missing = rawQuoteGaps(session.state)
+  const missing = session.state.intake?.quoteFlowVersion === 2 ? missingQuoteQuestions(session.state) : rawQuoteGaps(session.state)
   if (missing.length) {
-    await sendAndLog(conversationId, to, nextShortQuestion(session.state))
+    await sendAndLog(conversationId, to, session.state.intake?.quoteFlowVersion === 2 ? (missingQuoteMessage(session.state) || '') : nextShortQuestion(session.state))
     return
   }
   // No recalcular al recibir una confirmación duplicada; reenviar el enlace existente.
@@ -348,6 +336,205 @@ async function finishTommyQuote(session: QuoteSessionRow, conversationId: string
     // El PDF ya se entregó: un error de telemetría NO anula la cotización.
     console.error('[WhatsApp][cotización] PDF entregado, falló el estado administrativo:', error)
   }
+}
+
+/** Flujo de cuatro mensajes aprobado: preguntas -> faltantes (si los hay) -> fotos -> inventario. */
+const INITIAL_QUESTIONS = [
+  'Nombre, Email y Rut. Si eres empresa escribe boleta o factura y razón social.',
+  '¿De qué calle hasta qué calle es el traslado? Incluye número, comuna y región.',
+  'Lista de artículos a trasladar.',
+  'Fecha y hora del flete. Incluye un SI o NO si puedes cambiar la fecha.',
+  '¿Hay ascensor o escalera y en qué piso? Si es casa indícalo.',
+  '¿A qué distancia están las entradas del estacionamiento en el origen y destino respectivamente?',
+  '¿Necesitas que embalemos algo? Nombra qué artículos.',
+  '¿Necesitas que desarmemos y armemos muebles? Nómbralos.',
+]
+
+async function finishApprovedQuote(session: QuoteSessionRow, conversationId: string, to: string) {
+  const pending = missingQuoteMessage(session.state)
+  if (pending) {
+    const updated = await mutateQuoteSessionAtomically(session.id, current => withQuoteFlowStep(current, 'questions'))
+    await sendAndLog(conversationId, to, missingQuoteMessage(updated.state) || pending)
+    return
+  }
+  if (!canCloseInventory(session.state) ||
+    (session.state.inventoryPhotos || []).some(photo => photo.status !== 'done')) {
+    await sendAndLog(conversationId, to, 'Todavía hay artículos o fotos por identificar. Indícame cuáles son antes de confirmar. 📦')
+    return
+  }
+  // La comprobación del paso impide emitir PDF antes de mostrar el inventario.
+  if (quoteFlowStep(session.state) !== 'inventory') {
+    await sendAndLog(conversationId, to, await inventoryReviewQuestion(session.state))
+    return
+  }
+  await finishTommyQuote(session, conversationId, to)
+}
+
+async function processApprovedPhoto(
+  session: QuoteSessionRow, conversationId: string, to: string,
+  message: ReturnType<typeof extractMessages>[number],
+) {
+  // Registrar la foto antes de la llamada a IA; mismo JSONB, sin migración.
+  session = await mutateQuoteSessionAtomically(session.id, current => upsertInventoryPhoto(current, {
+    messageId: message.id, status: 'processing', recognized: [],
+  }))
+  const imageDataUrl = message.imageId ? await downloadWhatsAppMediaAsDataUrl(message.imageId) : null
+  if (!imageDataUrl) {
+    await mutateQuoteSessionAtomically(session.id, current => upsertInventoryPhoto(current, {
+      messageId: message.id, status: 'needs_description', recognized: [],
+    }))
+    await sendAndLog(conversationId, to, 'No pude abrir esa foto. Reenvíala o descríbeme sus artículos.')
+    return
+  }
+  let stored: Awaited<ReturnType<typeof saveQuotePhoto>>
+  try {
+    stored = await saveQuotePhoto(session.id, message.id, imageDataUrl)
+  } catch (error) {
+    console.error('[WhatsApp][fotos] No se pudo guardar original:', error)
+    await mutateQuoteSessionAtomically(session.id, current => ({
+      ...current, inventoryPhotos: (current.inventoryPhotos || []).filter(photo => photo.messageId !== message.id),
+    }))
+    await sendAndLog(conversationId, to, 'No pude guardar la foto. Por favor, reenvíala.')
+    return
+  }
+  let inventory: Awaited<ReturnType<typeof parseWhatsAppInventory>>
+  try {
+    inventory = await parseWhatsAppInventory(message.text, imageDataUrl)
+  } catch (error) {
+    console.error('[WhatsApp][fotos] Falló el reconocimiento:', error)
+    await mutateQuoteSessionAtomically(session.id, current => upsertInventoryPhoto(current, {
+      messageId: message.id, status: 'needs_description', recognized: [], storagePath: stored.storagePath,
+    }))
+    await sendAndLog(conversationId, to, 'No pude identificar los artículos de la foto. Escríbeme qué aparece.')
+    return
+  }
+  await addUsage(conversationId, inventory.usage).catch(console.warn)
+  session = await mutateQuoteSessionAtomically(session.id, current => {
+    const next = upsertInventoryPhoto(mergeInventory(current, inventory.statePatch), {
+      messageId: message.id,
+      status: inventory.needsReview ? 'needs_description' : 'done',
+      recognized: inventory.recognizedNames, storagePath: stored.storagePath,
+    })
+    next.additionalServices.photos = [...new Set([...(next.additionalServices.photos || []), stored.publicUrl])]
+    return next
+  })
+  if (inventory.needsReview) {
+    await sendAndLog(conversationId, to, 'Recibí la foto, pero hay artículos que no pude reconocer. ¿Cuáles son?')
+  } else if (quoteFlowStep(session.state) === 'questions') {
+    await sendAndLog(conversationId, to, missingQuoteMessage(session.state) || QUOTE_FIRST_MESSAGE)
+  } else if (quoteFlowStep(session.state) === 'inventory') {
+    await sendAndLog(conversationId, to, await inventoryReviewQuestion(session.state))
+  } else {
+    await sendAndLog(conversationId, to, 'Foto añadida al inventario 📸 Puedes enviar más o escribir *LISTO* para revisarlo.')
+  }
+}
+
+async function processApprovedQuoteTurn(
+  session: QuoteSessionRow, conversationId: string, to: string,
+  message: ReturnType<typeof extractMessages>[number],
+) {
+  const step = quoteFlowStep(session.state)
+  const text = message.text.trim()
+  if (message.type === 'image') {
+    if (step === 'questions') {
+      await sendAndLog(conversationId, to, 'Primero terminemos los datos del traslado. Luego te pediré las fotos opcionales. 📸\n\n' + (missingQuoteMessage(session.state) || QUOTE_FIRST_MESSAGE))
+      return
+    }
+    await processApprovedPhoto(session, conversationId, to, message)
+    return
+  }
+  if (step === 'questions') {
+    if (/^(s[ií]|no)[.!\s]*$/i.test(text) && missingQuoteQuestions(session.state).length > 1) {
+      await sendAndLog(conversationId, to, missingQuoteMessage(session.state) || QUOTE_FIRST_MESSAGE)
+      return
+    }
+    if (isInventoryConfirm(text)) {
+      await sendAndLog(conversationId, to, missingQuoteMessage(session.state) || QUOTE_FIRST_MESSAGE)
+      return
+    }
+    const normalized = normalizeQuoteCustomerReply(text)
+    if (!normalized) {
+      await sendAndLog(conversationId, to, missingQuoteMessage(session.state) || QUOTE_FIRST_MESSAGE)
+      return
+    }
+    const count = session.state.intake?.nlpQuestionCount || 1
+    const questions = count <= 1 ? INITIAL_QUESTIONS : missingQuoteQuestions(session.state)
+    let parsed: Awaited<ReturnType<typeof parseRawCustomerQuote>>
+    try {
+      parsed = await parseRawCustomerQuote(session.state, normalized, questions)
+    } catch (error) {
+      console.error('[WhatsApp][NLP] No se pudo interpretar el mensaje:', error)
+      await sendAndLog(conversationId, to, 'No pude procesar el último mensaje. Tus respuestas anteriores están guardadas; reenvía solo este mensaje.')
+      return
+    }
+    session = await mutateQuoteSessionAtomically(session.id, current => {
+      const merged = mergeRawQuote(current, parsed.data)
+      merged.intake!.nlpLastRaw = text
+      merged.intake!.nlpQuestionCount = count + 1
+      return merged
+    })
+    await addUsage(conversationId, parsed.usage).catch(console.warn)
+    const pending = missingQuoteMessage(session.state)
+    if (pending) {
+      await sendAndLog(conversationId, to, pending)
+    } else {
+      session = await mutateQuoteSessionAtomically(session.id, current => withQuoteFlowStep(current, 'photos'))
+      await sendAndLog(conversationId, to, QUOTE_PHOTO_MESSAGE)
+    }
+    return
+  }
+  if (step === 'photos') {
+    if (isPhotoFinish(text)) {
+      if (!canCloseInventory(session.state)) {
+        const unresolved = session.state.inventoryPhotos?.filter(p => p.status !== 'done') || []
+        await sendAndLog(conversationId, to, unresolved.length
+          ? 'Quedan fotos sin identificar. Escríbeme qué aparece en ellas para incorporarlas.'
+          : 'Aún falta el inventario. Escribe los artículos que trasladaremos y sus cantidades.')
+        return
+      }
+      session = await mutateQuoteSessionAtomically(session.id, current => {
+        const next = withQuoteFlowStep(current, 'inventory')
+        next.inventoryCollectionDone = true
+        return next
+      })
+      await sendAndLog(conversationId, to, await inventoryReviewQuestion(session.state))
+      return
+    }
+    if (!text) {
+      await sendAndLog(conversationId, to, QUOTE_PHOTO_MESSAGE)
+      return
+    }
+    // Si una foto no se pudo interpretar, la descripción del cliente la resuelve.
+    const inventory = await parseWhatsAppInventory(text)
+    await addUsage(conversationId, inventory.usage).catch(console.warn)
+    session = await mutateQuoteSessionAtomically(session.id, current => {
+      const next = mergeInventory(current, inventory.statePatch)
+      const photo = (next.inventoryPhotos || []).find(p => p.status === 'needs_description')
+      if (photo && !inventory.needsReview && inventory.statePatch.items.length) {
+        return upsertInventoryPhoto(next, { ...photo, status: 'done', recognized: inventory.recognizedNames })
+      }
+      return next
+    })
+    await sendAndLog(conversationId, to, inventory.needsReview
+      ? 'Hay artículos sin identificar. Descríbelos mejor, por favor.'
+      : 'Artículos registrados 📦 Puedes enviar fotos, o escribir *LISTO* para revisar el inventario.')
+    return
+  }
+  // Última etapa: la revisión siempre ocurre ANTES del PDF.
+  if (isInventoryConfirm(text)) {
+    await finishApprovedQuote(session, conversationId, to)
+    return
+  }
+  if (/^(inventario|ver inventario|revisar)[.!\s]*$/i.test(text)) {
+    await sendAndLog(conversationId, to, await inventoryReviewQuestion(session.state))
+    return
+  }
+  if (parseInventoryEdits(text) !== null) {
+    const result = await editInventory(session.id, text)
+    await sendAndLog(conversationId, to, result.response)
+    return
+  }
+  await sendAndLog(conversationId, to, 'Para modificar tu inventario escribe *Quitar:* o *Agregar:* con los artículos. Para recibir el PDF escribe *confirmar*.')
 }
 
 /** Flujo simple de Tommy: WhatsApp crudo -> OpenAI (UNA llamada) -> estado persistente -> PDF.
@@ -565,27 +752,15 @@ async function processFreeformQuoteTurn(
   await sendFreeformReview(session, conversationId, to, availability, 'next')
 }
 
-async function deactivateBot(phone: string, bot: WhatsAppBotState, mode: 'idle' | 'human') {
+async function deactivateBot(phone: string, bot: WhatsAppBotState) {
   if (bot.quote_session_id && bot.mode === 'quoting') {
-    if (mode === 'human') {
-      const { error } = await supabaseAdmin
-        .from('quote_sessions')
-        .update({ status: 'handoff', updated_at: new Date().toISOString() })
-        .eq('id', bot.quote_session_id)
-        .in('status', ['collecting', 'ready'])
-      if (error) throw new Error(error.message)
-    } else {
-      await closeQuoteSession(bot.quote_session_id)
-    }
-    const { error } = await supabaseAdmin
-      .from('ai_conversations')
-      .update({ status: mode === 'human' ? 'handoff' : 'closed', updated_at: new Date().toISOString() })
-      .eq('quote_session_id', bot.quote_session_id)
-      .eq('channel', 'whatsapp')
-      .eq('status', 'active')
+    await closeQuoteSession(bot.quote_session_id)
+    const { error } = await supabaseAdmin.from('ai_conversations')
+      .update({ status: 'closed', updated_at: new Date().toISOString() })
+      .eq('quote_session_id', bot.quote_session_id).eq('channel', 'whatsapp').eq('status', 'active')
     if (error) throw new Error(error.message)
   }
-  await setBotMode(phone, mode)
+  await setBotMode(phone, 'idle')
 }
 
 export async function processIncoming(message: ReturnType<typeof extractMessages>[number]) {
@@ -633,7 +808,7 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
   if (decision === 'start_quote' || decision === 'start_new_quote') {
     if (decision === 'start_new_quote') {
       // Solo NUEVA cierra deliberadamente una cotización anterior; COTIZAR/RETOMAR la conserva.
-      if (bot.mode === 'quoting') await deactivateBot(phone, bot, 'idle')
+      if (bot.mode === 'quoting') await deactivateBot(phone, bot)
       const { error } = await supabaseAdmin.from('quote_sessions')
         .update({ status: 'closed', updated_at: new Date().toISOString() })
         .eq('channel', 'whatsapp').eq('phone', phone).in('status', ['collecting', 'ready'])
@@ -651,6 +826,18 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
       if (archiveError) throw new Error(archiveError.message)
       session = await createWhatsAppSession(phone, customerPhone(to))
     }
+    if (session.state.intake && !session.state.intake.quoteFlowVersion &&
+      (botCommand(message.text) === 'COTIZAR' || botCommand(message.text) === 'RETOMAR')) {
+      // Reanudar conversaciones anteriores con el nuevo flujo, conservando su JSONB.
+      session = await mutateQuoteSessionAtomically(session.id, current => {
+        const pending = missingQuoteQuestions(current)
+        const hasFinishedPhotos = Boolean(current.inventoryPhotos?.length && current.inventoryCollectionDone)
+        const nextStep = pending.length ? 'questions' : hasFinishedPhotos ? 'inventory' : 'photos'
+        const upgraded = withQuoteFlowStep(current, nextStep)
+        upgraded.intake!.nlpQuestionCount = Math.max(2, upgraded.intake!.nlpQuestionCount || 0)
+        return upgraded
+      })
+    }
     if (messageContext.getStore()?.platform === 'instagram' && session.state.intake) {
       session = await saveQuoteSession(session.id, { ...session.state, intake: undefined })
     }
@@ -659,6 +846,29 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
     const conversationId = conversation.id as string
     await moveIncomingToConversation(message.id, conversationId)
     const resumed = Date.now() - Date.parse(session.created_at) > 10_000
+    if (session.state.intake?.quoteFlowVersion === 2) {
+      if (!botCommand(message.text) && message.text.trim()) {
+        await processApprovedQuoteTurn(session, conversationId, to, message)
+        return
+      }
+      const step = quoteFlowStep(session.state)
+      if (step === 'questions') {
+        if (!resumed) {
+          session = await mutateQuoteSessionAtomically(session.id, current => {
+            current.intake!.nlpQuestionCount ||= 1
+            return current
+          })
+          await sendAndLog(conversationId, to, QUOTE_FIRST_MESSAGE)
+        } else {
+          await sendAndLog(conversationId, to, missingQuoteMessage(session.state) || QUOTE_FIRST_MESSAGE)
+        }
+      } else if (step === 'photos') {
+        await sendAndLog(conversationId, to, QUOTE_PHOTO_MESSAGE)
+      } else {
+        await sendAndLog(conversationId, to, await inventoryReviewQuestion(session.state))
+      }
+      return
+    }
     if (session.state.intake?.tommyVersion === 1) {
       // El cliente respondió al menú directamente en español natural: procesar YA.
       // Evita la pantalla extra que antes descartaba ese primer mensaje.
@@ -685,40 +895,29 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
     return
   }
 
-  if (decision === 'human' || decision === 'exit' || decision === 'menu') {
+  if (decision === 'human') {
+    // Dormido hasta migración de DB. NO llamar a handoff_requests,
+    // NO cambiar bot_state.mode a 'human', NO cerrar la sesión.
+    await sendWhatsAppText(to, 'La atención por secretaría todavía no está habilitada. Si estás cotizando, puedes seguir aquí sin perder tus datos.')
+    return
+  }
+
+  if (decision === 'exit' || decision === 'menu') {
     // MENÚ no destruye la cotización; SALIR es la única salida que la cierra.
     if (decision === 'menu') {
       await setBotMode(phone, 'idle')
       await sendWhatsAppText(to, WHATSAPP_WELCOME)
       return
     }
-    let session: QuoteSessionRow | null = null
-    if (decision === 'human' && bot.quote_session_id) {
-      const found = await supabaseAdmin.from('quote_sessions').select('*').eq('id', bot.quote_session_id).maybeSingle()
-      if (found.error) throw new Error(found.error.message)
-      session = found.data as QuoteSessionRow | null
-    }
-    // En una derivación ya abierta, cambiar la categoría no crea otro ticket.
-    const reason = reasonFromCommand(botCommand(message.text))
-    if (decision === 'human' && bot.mode === 'human') {
-      // if (reason) await setPendingHandoffReason(phone, reason)  // sin tabla handoff_requests
-      await sendWhatsAppText(to, 'La derivación automática está temporalmente desactivada. Escribe *COTIZAR* para continuar.')
-      return
-    }
-    await deactivateBot(phone, bot, decision === 'human' ? 'human' : 'idle')
-    if (decision === 'human') {
-      // await createHandoffRequest({ phone, session, reason })  // sin tabla handoff_requests
-      await sendWhatsAppText(to, 'La derivación automática está temporalmente desactivada. Puedes continuar tu cotización con *COTIZAR*.')
-    } else {
-      await sendWhatsAppText(to, 'Atención terminada. Para volver, escribe *COTIZAR* o *ASESOR*.')
-    }
+    await deactivateBot(phone, bot)
+    await sendWhatsAppText(to, 'Atención terminada. Para volver, escribe *COTIZAR*.')
     return
   }
 
   if (decision === 'expire_silent') {
     // Detener autorización de IA, NO borrar la cotización. El cliente puede reanudarla.
     await setBotMode(phone, 'idle')
-    await sendWhatsAppText(to, 'Tu cotización sigue guardada. Escribe *RETOMAR* para continuar donde quedaste, o *ASESOR* para hablar con nosotros.')
+    await sendWhatsAppText(to, 'Tu cotización sigue guardada. Escribe *RETOMAR* para continuar donde quedaste.')
     return
   }
 
@@ -746,7 +945,7 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
   if (error) throw new Error(error.message)
   if (!data || !['collecting', 'ready'].includes(data.status)) {
     await setBotMode(phone, 'idle')
-    await sendWhatsAppText(to, 'La cotización anterior ya no está activa. Escribe *COTIZAR* para iniciar otra o *ASESOR* para atención humana.')
+    await sendWhatsAppText(to, 'La cotización anterior ya no está activa. Escribe *COTIZAR* para iniciar otra.')
     return
   }
   let session = data as QuoteSessionRow
@@ -759,7 +958,7 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
   // Notas de voz y otros adjuntos no son texto parseable. Evita llamar
   // a OpenAI con un texto vacío y perder la respuesta silenciosamente.
   if (message.type !== 'text' && message.type !== 'interactive' && message.type !== 'image') {
-    await sendAndLog(conversationId, to, 'Por ahora necesito que respondas por escrito. También puedes enviar fotografías en la etapa de inventario, o escribir *ASESOR* para atención humana.')
+    await sendAndLog(conversationId, to, 'Por ahora necesito que respondas por escrito. En la etapa de fotos también puedes enviar imágenes.')
     return
   }
 
@@ -771,7 +970,7 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
   }
 
   if (HUMAN_REQUEST.test(message.text) && !/\b(no|sin|ning[uú]n)\b.{0,25}\b(asesor|ejecutivo|humano)\b/i.test(message.text)) {
-    await handleHumanHandoff(session, conversationId, to)
+    await sendAndLog(conversationId, to, 'La derivación a secretaría está temporalmente desactivada. Puedes continuar tu cotización aquí.')
     return
   }
 
@@ -785,6 +984,10 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
 
   // Nuevo flujo: declaración libre -> ficha editable -> confirmación explícita.
   // Sesiones antiguas sin state.intake siguen el flujo previo para no romperlas.
+  if (state.intake?.quoteFlowVersion === 2) {
+    await processApprovedQuoteTurn(session, conversationId, to, message)
+    return
+  }
   if (state.intake?.tommyVersion === 1) {
     await processTommyQuoteTurn(session, conversationId, to, message)
     return
@@ -1000,7 +1203,7 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
 
   if (parsed.patch.requestHuman) {
     session = await saveQuoteSession(session.id, state)
-    await handleHumanHandoff(session, conversationId, to)
+    await sendAndLog(conversationId, to, 'La derivación a secretaría está temporalmente desactivada. Puedes continuar tu cotización aquí.')
     return
   }
 
@@ -1032,7 +1235,7 @@ export async function notifyMessageProcessingError(message: ReturnType<typeof ex
   }
   if (!explicitActivation && !activeAuthorizedQuote) return
   try {
-    await sendWhatsAppText(message.from, 'No pude procesar tu último mensaje. Por favor, vuelve a enviarlo en texto. Si vuelve a ocurrir, escribe *ASESOR* para atención humana o *SALIR* para terminar.')
+    await sendWhatsAppText(message.from, 'No pude procesar tu último mensaje. Por favor, vuelve a enviarlo en texto. Si vuelve a ocurrir, escribe *SALIR* para terminar.')
   } catch (error) {
     console.error('[WhatsApp webhook] No se pudo enviar aviso de error:', error)
   }

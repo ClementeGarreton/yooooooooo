@@ -7,7 +7,7 @@ export interface CatalogInventoryItem { id: string; name: string; is_active?: bo
 export interface InventorySelection { catalogItemId: string; quantity: number }
 export interface InventoryEdit { action: 'remove' | 'add'; description: string; quantity: number | null }
 
-const ACTION = /^(quitar|eliminar|sacar|agregar|añadir|anadir|sumar|incluir)\s+(.+)$/i
+const ACTION = /^(quitar|eliminar|sacar|agregar|añadir|anadir|sumar|incluir)(?:\s*[:：]\s*|\s+)(.+)$/i
 const CONNECTOR = /\s+(?:y|,|;)\s+(?=(?:quitar|eliminar|sacar|agregar|añadir|anadir|sumar|incluir)\b)|\s*[,;]\s*(?=(?:quitar|eliminar|sacar|agregar|añadir|anadir|sumar|incluir)\b)/i
 
 function normalize(value: string): string {
@@ -33,7 +33,21 @@ function meaningful(value: string): string[] {
 /** Comandos explícitos, sin inferir altas o bajas de mensajes normales. */
 export function parseInventoryEdits(text: string): InventoryEdit[] | null {
   let value = text.trim().replace(/^(?:(?:quiero|quisiera|necesito|por\s+favor)\s+)+/i, '')
-  if (!ACTION.test(value)) return null
+  if (!ACTION.test(value) && !/^(?:quitar|eliminar|sacar|agregar|añadir|anadir|sumar|incluir)\s*[:：]/i.test(value)) return null
+  // Formato aprobado: «Quitar: mesa, silla» o «Agregar: caja, cama».
+  // También acepta dos bloques, uno por línea, sin exigir repetir el verbo.
+  if (/^(?:quitar|eliminar|sacar|agregar|añadir|anadir|sumar|incluir)\s*[:：]/i.test(value)) {
+    const blocks = value.split(/\n(?=\s*(?:quitar|eliminar|sacar|agregar|añadir|anadir|sumar|incluir)\s*[:：])/i)
+    const expanded: string[] = []
+    for (const block of blocks) {
+      const header = /^(quitar|eliminar|sacar|agregar|añadir|anadir|sumar|incluir)\s*[:：]\s*([\s\S]*)$/i.exec(block.trim())
+      if (!header) return []
+      for (const item of header[2].split(/[,;\n]+/).map(s => s.trim()).filter(Boolean)) {
+        expanded.push(`${header[1]} ${item}`)
+      }
+    }
+    value = expanded.join(' y ')
+  }
   const parts = value.split(CONNECTOR)
   const edits: InventoryEdit[] = []
   for (const part of parts) {

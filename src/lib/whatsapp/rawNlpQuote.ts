@@ -11,7 +11,7 @@ type Stop = { street: string; number: string; commune: string; region: string; a
 type ItemExtraction = { catalogItemId: string; quantity: number; source: string }
 
 type Data = {
-  name: string | null; email: string | null; taxDocument: 'boleta' | 'factura' | null
+  name: string | null; email: string | null; rut: string | null; taxDocument: 'boleta' | 'factura' | null
   companyName: string | null; companyRut: string | null
   date: string | null; time: string | null; isFlexible: boolean | null
   originStreet: string | null; originNumber: string | null; originCommune: string | null; originRegion: string | null; originAdditionalInfo: string | null
@@ -32,7 +32,7 @@ type Data = {
 }
 
 const strings = [
-  'name','email','companyName','companyRut','date','time',
+  'name','email','rut','companyName','companyRut','date','time',
   'originStreet','originNumber','originCommune','originRegion','originAdditionalInfo',
   'destinationStreet','destinationNumber','destinationCommune','destinationRegion','destinationAdditionalInfo',
   'observations','stairsDetail','carryDetail','packingDetail',
@@ -82,12 +82,12 @@ function compact(state:QuoteSessionState) {
   }
 }
 
-export async function parseRawCustomerQuote(state:QuoteSessionState, rawMessage:string) {
+export async function parseRawCustomerQuote(state:QuoteSessionState, rawMessage:string, currentQuestions: string[] = []) {
   const {data:catalog,error} = await supabaseAdmin.from('catalog_items')
     .select('id,name,category').eq('is_active',true).order('name')
   if (error) throw new Error(`Catálogo no disponible: ${error.message}`)
   const rows = (catalog || []).map((r:any)=>({id:String(r.id), name:String(r.name), category:String(r.category || '')}))
-  const ids = new Set(rows.map(r=>r.id))
+  const ids = new Set(rows.map((r: {id:string})=>r.id))
   const {data,usage} = await createStructuredResponseWithUsage<Data>({
     model:process.env.OPENAI_NLP_MODEL || 'gpt-6.1-sol', reasoningEffort:'low',ignoreGlobalReasoningEffort:true,
     schemaName:'whatsapp_full_quote_nlp', schema, maxOutputTokens:5200,
@@ -96,8 +96,8 @@ Tu ÚNICA función es extraer datos nuevos del texto crudo del cliente hacia el 
 No redactes preguntas; el servidor compara cada variable con el estado guardado.
 No completes por defecto: un servicio no mencionado es null, NO false; un piso desconocido es null, NO 0.
 0, false y el texto "no" son respuestas válidas. No infieras un ascensor por la existencia de pisos.
-Si el cliente dice "ningún servicio adicional", marca todos los servicios opcionales false y ayudantes extra 0.
-Si dice "no hay paradas intermedias", stopsSpecified=false y stops=[]. Si da paradas con dirección completa, stopsSpecified=true y stops=[...]. Si menciona una parada pero faltan sus datos, stopsSpecified=null y stops=[].
+Si el cliente dice "ningún servicio adicional", marca todos los servicios opcionales false y ayudantes extra 0. Si responde NO a una pregunta que combina armado y desarmado, marca disassembly=false y assembly=false. Si responde NO a una pregunta de embalaje, marca packing=false y packingAnswer=false. Si nombra qué muebles hay que armar o desarmar, conserva sus nombres en observations y no cambies el inventario por ello. Si un inmueble es una casa, NO presupongas qué pisos o escaleras se utilizan: extrae los pisos solo si están expresamente indicados.
+Si el cliente responde DIRECTO a la pregunta de paradas, stopsSpecified=false y stops=[]. Si responde NO a una pregunta que enumera servicios extras, marca en false o 0 TODOS los servicios enumerados en esa pregunta, y deja los demás campos sin modificar. Si dice "no hay paradas intermedias", stopsSpecified=false y stops=[]. Si da paradas con dirección completa, stopsSpecified=true y stops=[...]. Si menciona una parada pero faltan sus datos, stopsSpecified=null y stops=[].
 Si una ubicación no incluye departamento o instrucciones adicionales, deja additionalInfo null; no es requisito si no aplica.
 Si el cliente copia una plantilla con preguntas, SOLO interpreta lo escrito DESPUÉS de cada "Respuesta:"; no confundas preguntas con respuestas.
 Cuando la comuna permite inferir inequívocamente la región (ej.: Las Condes = Metropolitana) normalízala.
@@ -109,9 +109,10 @@ Usa solo IDs de catálogo válidos. Si un artículo no existe, añádelo a unres
 La fecha actual en Chile es ${new Date().toLocaleDateString('en-CA',{timeZone:'America/Santiago'})}; normaliza fecha YYYY-MM-DD, hora HH:mm.
 El campo parkingDistance es distancia real en metros desde el camión al acceso EN CADA EXTREMO (0 si responde sin acarreo).
 El campo stairsCarry señala bultos que deben ir por escalera A PESAR de existir ascensor; no equivale a piso.
-Datos de empresa son necesarios solamente para factura. No inventes nombre, e-mail o RUT.
+Datos de empresa son necesarios solamente para factura. No inventes nombre, e-mail o RUT. Extrae el RUT personal en rut; el de empresa va solo en companyRut. Si hay un mensaje 'Pregunta N: respuesta', N corresponde EXCLUSIVAMENTE a la pregunta N de 'Preguntas del último mensaje del bot'; no uses la numeración de otro formulario.
 No inventes precio, volumen, peso, viaje ni recargos. Los calcula el motor del cotizador web.
 Catálogo válido: ${JSON.stringify(rows)}
+Preguntas del último mensaje del bot (Pregunta 1, 2... de esta interacción, si corresponde): ${JSON.stringify(currentQuestions)}
 Estado previo (contexto, NO copiar como nuevas respuestas): ${JSON.stringify(compact(state))}`,
     input:[{role:'user',content:rawMessage}],
   })
@@ -129,7 +130,7 @@ export function mergeRawQuote(state:QuoteSessionState,d:Data):QuoteSessionState 
   next.intake ||= {stage:'describe',serviceAnswers:[],tommyVersion:1,tommyAnswers:[],tommyDetails:{}}
   const answered = new Set(next.intake.answeredQuoteFields || [])
   const mark = (key:string,value:unknown) => {if(value !== null && value !== undefined) answered.add(key)}
-  assign(next.personalInfo,'name',d.name); assign(next.personalInfo,'email',d.email)
+  assign(next.personalInfo,'name',d.name); assign(next.personalInfo,'email',d.email); assign(next.personalInfo,'rut',d.rut)
   if (d.taxDocument) {next.taxDocument=d.taxDocument;next.personalInfo.isCompany=d.taxDocument === 'factura';mark('taxDocument',d.taxDocument)}
   assign(next.personalInfo,'companyName',d.companyName);assign(next.personalInfo,'companyRut',d.companyRut)
   assign(next.schedule,'date',d.date);assign(next.schedule,'time',d.time)
